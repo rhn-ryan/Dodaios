@@ -309,37 +309,6 @@ def _read(cfg: Any, name: str, default: Any) -> Any:
     return default if value is None else value
 
 
-#: (model path, folded phrase) -> whether the model's lexicon can spell it.
-#: A probe loads the Vosk model (~0.4 s), so resolve_wake_plan must never ask
-#: twice for the same pair. Fail-open: a probe error counts as "can speak it",
-#: because refusing a word the model actually knows would silently kill wake.
-_VOSK_PHRASE_VOCAB: dict[tuple[str, str], bool] = {}
-
-
-def vosk_model_can_speak(model_path: str, phrase: str) -> bool:
-    """Whether ``phrase`` is spellable by the Vosk model at ``model_path``.
-
-    Grammar keyword spotting can only hear words in the model's lexicon; an
-    out-of-vocabulary phrase builds a grammar WITHOUT it and the listener is
-    deaf forever (live 2026-11-21: "Hakuna matata" on the small English model).
-    Resolution uses this to choose the open-vocabulary transcript match instead.
-    """
-    key = (str(model_path), str(phrase).strip().lower())
-    cached = _VOSK_PHRASE_VOCAB.get(key)
-    if cached is not None:
-        return cached
-    try:
-        from dodaios.plugins.wake.vosk_kws_provider import (
-            vosk_model_supports_phrase,
-        )
-
-        supported = bool(vosk_model_supports_phrase(str(model_path), phrase))
-    except Exception:  # noqa: BLE001 — a probe must never eat a usable phrase
-        supported = True
-    _VOSK_PHRASE_VOCAB[key] = supported
-    return supported
-
-
 def resolve_wake_plan(
     cfg: Any,
     *,
@@ -450,20 +419,14 @@ def resolve_wake_plan(
     lang_norm = (language or "auto").strip().lower().split("-")[0]
     lang_is_concrete = bool(lang_norm) and lang_norm != "auto"
     vosk_model = None
-    # Set when a Vosk model was selected but its lexicon cannot spell the
-    # phrase. That model can never fire, so resolution falls through to the
-    # open-vocabulary transcript match (or reports "wake off" honestly).
-    vosk_oov: str | None = None
-    if phrase and engine_pref in ("auto", "vosk_kws", "openwakeword"):
+    if phrase and engine_pref in ("auto", "vosk_kws"):
         if vosk_available is None:
             import importlib.util as _ilu
 
             vosk_available = _ilu.find_spec("vosk") is not None
         if vosk_available:
-            if engine_pref in ("vosk_kws", "openwakeword"):
-                # Explicit force (or the retired openwakeword value, which must
-                # reach a working local engine rather than the unreliable
-                # transcript match): any installed model.
+            if engine_pref == "vosk_kws":
+                # Explicit force: honour the user's choice, any installed model.
                 vosk_model = resolve_vosk_model_path(language)
             elif lang_is_concrete:
                 # auto engine + a concrete language: trust vosk only for a model
@@ -481,46 +444,33 @@ def resolve_wake_plan(
             or custom_stale
             or custom_missing
         ):
-            # The grammar engine can only spell words in the installed model's
-            # lexicon. "Hakuna matata" is not in the small English model, so a
-            # vosk_kws plan for it would arm a permanently deaf listener.
-            if phrase and not vosk_model_can_speak(str(vosk_model), phrase):
-                vosk_oov = str(vosk_model)
-                log.warning(
-                    "Wake phrase '%s' is not in the %s Vosk model's vocabulary "
-                    "(%s) — falling through to the transcript-match engine.",
-                    phrase,
-                    language or "configured",
-                    vosk_model,
-                )
-            else:
-                return WakeWordPlan(
-                    phrase=phrase,
-                    engine="vosk_kws",
-                    oww_model_path=None,
-                    oww_keyword=canonical,
-                    threshold=threshold,
-                    matcher=matcher,
-                    needs_local_whisper=False,
-                    degraded=False,
-                    message=(
-                        f"Any-word Vosk keyword spotting for '{phrase}' "
-                        f"(model: {vosk_model})."
-                    ),
-                    message_code="vosk_kws",
-                    message_params={"phrase": phrase, "model": str(vosk_model)},
-                    verify_prefix=False,  # the provider's sound confirm is built in
-                    vosk_model_path=vosk_model,
-                    # Every installed model, primary first: the provider listens
-                    # on all of them so a phrase whose language differs from the
-                    # speaker's ("Hey Jarvis" de-spoken) still has a model that
-                    # can spell it. Verified per model — precision gates intact.
-                    vosk_model_paths=tuple(
-                        resolve_vosk_model_paths(
-                            lang_norm if lang_is_concrete else language
-                        )
-                    ),
-                )
+            return WakeWordPlan(
+                phrase=phrase,
+                engine="vosk_kws",
+                oww_model_path=None,
+                oww_keyword=canonical,
+                threshold=threshold,
+                matcher=matcher,
+                needs_local_whisper=False,
+                degraded=False,
+                message=(
+                    f"Any-word Vosk keyword spotting for '{phrase}' "
+                    f"(model: {vosk_model})."
+                ),
+                message_code="vosk_kws",
+                message_params={"phrase": phrase, "model": str(vosk_model)},
+                verify_prefix=False,  # the provider's sound confirm is built in
+                vosk_model_path=vosk_model,
+                # Every installed model, primary first: the provider listens
+                # on all of them so a phrase whose language differs from the
+                # speaker's ("Hey Jarvis" de-spoken) still has a model that
+                # can spell it. Verified per model — precision gates intact.
+                vosk_model_paths=tuple(
+                    resolve_vosk_model_paths(
+                        lang_norm if lang_is_concrete else language
+                    )
+                ),
+            )
 
     # 3. Arbitrary phrase via local-Whisper transcript match.
     want_stt = (
@@ -529,20 +479,7 @@ def resolve_wake_plan(
         or engine_pref == "openwakeword"           # legacy engine value, no model ships
     )
     if want_stt and local_whisper_available:
-        if vosk_oov is not None:
-            # A functioning engine, not a degrade: local Whisper transcribes any
-            # word, which is exactly why the transcript match is the right home
-            # for a phrase the grammar model cannot spell. Honest about the
-            # reason, so a user comparing plans is not left guessing.
-            degraded = False
-            message = (
-                f"'{phrase}' is not in the {language or 'configured'} Vosk "
-                "model's vocabulary, so the local-Whisper transcript match "
-                "listens for it instead (open vocabulary: any phrase works)."
-            )
-            message_code = "vosk_out_of_vocabulary"
-            message_params = {"phrase": phrase, "language": str(language or "")}
-        elif custom_missing:
+        if custom_missing:
             # A configured custom model file is gone. Best-effort fallback to
             # transcript match, but this IS a degrade — the user's trained
             # model no longer applies.
@@ -616,22 +553,6 @@ def resolve_wake_plan(
     # is preserved; installing the local speech pack (works for ANY word) or
     # supplying a custom .onnx is what makes the wake word actually fire.
     _phrase_label = phrase or "your wake word"
-    # A phrase the Vosk model cannot spell plus no local Whisper: no engine on
-    # this host can hear it. Say exactly that instead of "needs a local model",
-    # which would send the user to re-download the model that just refused it.
-    _oov_message = (
-        f"'{phrase}' is not in the {language or 'configured'} Vosk model's "
-        "vocabulary, and no local Whisper engine is available to match it by "
-        "transcript. Pick a phrase made of ordinary words, or install the local "
-        "speech pack (works for any word)."
-        if vosk_oov is not None
-        else (
-            f"Wake word '{_phrase_label}' needs a local model. Install the local "
-            "speech pack (works for any word) or supply a custom .onnx to enable "
-            "it. Until then the wake word is off — use the Call shortcut "
-            "to start a voice turn."
-        )
-    )
     return WakeWordPlan(
         phrase=phrase,
         engine="none",
@@ -641,7 +562,12 @@ def resolve_wake_plan(
         matcher=matcher,
         needs_local_whisper=False,
         degraded=True,
-        message=_oov_message,
+        message=(
+            f"Wake word '{_phrase_label}' needs a local model. Install the local "
+            "speech pack (works for any word) or supply a custom .onnx to enable "
+            "it. Until then the wake word is off — use the Call shortcut "
+            "to start a voice turn."
+        ),
         message_code="needs_local_model" if phrase else "needs_local_model_no_phrase",
         message_params={"phrase": phrase},
         verify_prefix=False,
@@ -659,7 +585,6 @@ WAKE_PLAN_MESSAGE_CODES: tuple[str, ...] = (
     "custom_onnx_other_phrase",
     "stt_match_unreliable",
     "stt_match_unreliable_any_language",
-    "vosk_out_of_vocabulary",
     "needs_local_model",
     "needs_local_model_no_phrase",
 )
@@ -674,5 +599,4 @@ __all__ = [
     "compile_wake_matcher",
     "custom_model_matches_phrase",
     "resolve_wake_plan",
-    "vosk_model_can_speak",
 ]

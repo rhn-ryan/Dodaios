@@ -29,8 +29,8 @@ class TestTierDefaultsCatalog:
         for provider, model in TIER_DEFAULTS_BY_PROVIDER["router"].items():
             if provider in LOCAL_PROVIDERS:
                 continue  # empty by design: plugin-side model discovery
-            if provider in ("litellm", "freellmapi"):
-                continue  # gateway aliases are the user's; the plugin lists them
+            if provider == "litellm":
+                continue  # proxy aliases are the user's; the plugin lists them
             if provider == "openrouter":
                 continue  # deliberate free-model default; not a fast-tier slug
             if provider == "gemini":
@@ -56,8 +56,8 @@ class TestTierDefaultsCatalog:
         for provider, model in TIER_DEFAULTS_BY_PROVIDER["deep"].items():
             if provider in LOCAL_PROVIDERS:
                 continue  # empty by design: plugin-side model discovery
-            if provider in ("litellm", "freellmapi"):
-                continue  # gateway aliases are the user's; the plugin lists them
+            if provider == "litellm":
+                continue  # proxy aliases are the user's; the plugin lists them
             if provider == "openrouter":
                 continue  # deliberate free-model default; not a frontier slug
             if provider == "grok":
@@ -85,9 +85,9 @@ class TestTierDefaultsCatalog:
 
         for tier, providers in TIER_DEFAULTS_BY_PROVIDER.items():
             for provider, model in providers.items():
-                if provider in LOCAL_PROVIDERS or provider in ("litellm", "freellmapi"):
+                if provider in LOCAL_PROVIDERS or provider == "litellm":
                     # Empty by design: the plugin discovers a model (a local
-                    # server's first download, or a gateway's first alias).
+                    # server's first download, or the LiteLLM proxy's first alias).
                     continue
                 assert model, f"empty model string at {tier}/{provider}"
 

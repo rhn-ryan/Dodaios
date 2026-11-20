@@ -362,10 +362,6 @@ export function ApiKeyForm({ secretKey, dashboardUrl, configured, credentialHelp
         <div className="relative flex-1">
           <input
             type={reveal ? "text" : "password"}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
             aria-label={fill(t("apikeys_view.enter_key_named"), { key: secretKey })}
             value={value}
             onChange={(e) => setValue(e.target.value)}

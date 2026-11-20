@@ -3451,7 +3451,6 @@
         "custom_onnx_other_phrase": "自定义唤醒模型“{model_file}”属于另一个短语；“{phrase}”使用本地 Whisper 转写匹配。",
         "stt_match_unreliable": "自定义短语“{phrase}”使用本地 Whisper 转写匹配——对于难读的名字这并不可靠。下载 {language} 的 Vosk 模型即可变得可靠（设置 -> 唤醒词 ->“下载唤醒模型”）。",
         "stt_match_unreliable_any_language": "自定义短语“{phrase}”使用本地 Whisper 转写匹配——对于难读的名字这并不可靠。下载所配置语言的 Vosk 模型即可变得可靠（设置 -> 唤醒词 ->“下载唤醒模型”）。",
-        "vosk_out_of_vocabulary": "「{phrase}」不在 {language} Vosk 模型的词表中，因此改由本地 Whisper 转写匹配来监听（开放词表：任何短语都可以使用）。",
         "needs_local_model": "唤醒词“{phrase}”需要本地模型。安装本地语音包（适用于任何词）或提供自定义 .onnx 即可启用。在此之前唤醒词保持关闭——请用“通话”快捷键开始语音对话。",
         "needs_local_model_no_phrase": "你的唤醒词需要本地模型。安装本地语音包（适用于任何词）或提供自定义 .onnx 即可启用。在此之前唤醒词保持关闭——请用“通话”快捷键开始语音对话。",
         "no_phrase": "尚未设置唤醒词。",

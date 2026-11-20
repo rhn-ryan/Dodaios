@@ -2192,12 +2192,6 @@ _TTS_DEFAULTS: dict[str, dict[str, str]] = {
         "voice_en": "vits-piper-en_US-ryan-medium",
         "language_code": "auto",
     },
-    "kokoro-local": {
-        "model": "",
-        "voice_de": "kokoro-en-v0_19",
-        "voice_en": "kokoro-en-v0_19",
-        "language_code": "auto",
-    },
 }
 
 # Per-provider voice allowlist — when the existing voice does not match the
@@ -2220,7 +2214,6 @@ _VOICES_FOR_PROVIDER: dict[str, frozenset[str]] = {
             "vits-piper-pt_PT-tugao-medium",
         }
     ),
-    "kokoro-local": frozenset({"kokoro-en-v0_19"}),
     "gemini-flash-tts": frozenset(
         {
             "Charon",

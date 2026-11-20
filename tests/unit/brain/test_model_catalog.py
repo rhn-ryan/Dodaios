@@ -700,11 +700,10 @@ class TestListModels:
         from dodaios.brain.app_control import LOCAL_PROVIDERS
 
         for provider in CATALOG_PROVIDERS:
-            if provider in LOCAL_PROVIDERS or provider in ("litellm", "freellmapi"):
-                # Local servers and gateways (a LiteLLM proxy, FreeLLMApi) have
-                # NO curated list: the names are whatever that server is
-                # configured to serve, and a fake fallback would advertise
-                # models it does not have.
+            if provider in LOCAL_PROVIDERS or provider == "litellm":
+                # Local servers and a LiteLLM proxy have NO curated list: the
+                # names are whatever that server is configured to serve, and a
+                # fake fallback would advertise models it does not have.
                 assert not CURATED_MODELS.get(provider)
                 continue
             assert CURATED_MODELS.get(provider), f"{provider} needs a curated list"
@@ -729,9 +728,6 @@ class TestListModels:
             # the user's own server holds (/api/tags resp. /v1/models).
             "ollama",
             "local-openai",
-            # The person's own unified router: its /v1/models roster is the
-            # live catalog of everything it is configured to serve.
-            "freellmapi",
         }
 
 

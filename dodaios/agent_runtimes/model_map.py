@@ -72,9 +72,6 @@ _ENDPOINTS: Final[dict[str, _Endpoint]] = {
     "vertex": _Endpoint("https://aiplatform.googleapis.com", cloud_project=True),
     "ollama": _Endpoint(None, keyless=True, local_server=True),
     "local-openai": _Endpoint(None, keyless=True, local_server=True),
-    # The person's own FreeLLMApi router: a known address, and a required
-    # unified key (keyless=False so a missing one is reported as such).
-    "freellmapi": _Endpoint("http://127.0.0.1:3001/v1", local_server=True),
     "openai-codex": _Endpoint(None, subscription=True),
 }
 

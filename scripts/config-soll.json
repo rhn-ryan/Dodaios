@@ -164,8 +164,5 @@
   },
   "brain.providers.openai-live": {
     "model": "gpt-live-1"
-  },
-  "brain.providers.freellmapi": {
-    "model": "claude-haiku-4-5"
   }
 }

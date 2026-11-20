@@ -332,8 +332,6 @@ PROVIDER_ALIASES = {
     "sonnet": "claude-api",
     "gpt": "openai",
     "chatgpt": "openai",
-    "chatgpt-web": "chatgpt-web",
-    "chatgpt web": "chatgpt-web",
     "openai": "openai",
     "gemini": "gemini",
     "flash": "gemini",
@@ -494,18 +492,18 @@ TIER_DEFAULTS_BY_PROVIDER: dict[str, dict[str, str]] = {
         "litellm": "",
         # Grok 4.3 is available across regions and supports local tool use.
         "grok": "grok-4.3",
-        # NVIDIA NIM router pick: the current fast tier. 2026-11-21: the pinned
-        # nemotron-3-super-120b-a12b reached end of life on 2026-10-03 (HTTP 410
-        # on every call), so the router default moved to the live lightning
-        # model; the reasoning flagship serves the deep tier. The user's own
-        # pick from the live catalog wins over this.
-        "nvidia": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        # NVIDIA NIM router pick: a widely-hosted, tool-capable, low-latency model
+        # (the reasoning Nemotron flagships are the deep tier). The user's own pick
+        # from the live catalog wins over this. 2026-08-09: moved off Meta's
+        # Llama 3.3 70B (dense, late 2024) to NVIDIA's own current sparse
+        # generation — 12B of 120B activate per token, so it answers faster than
+        # the dense model it replaces. Verified against integrate.api.nvidia.com.
+        "nvidia": "nvidia/nemotron-3-super-120b-a12b",
         "mistral": "mistral-small-3.1",
         # Local providers: no server-side catalog is knowable ahead of time —
         # empty means "the plugin discovers the first installed model".
         "ollama": "",
         "local-openai": "",
-        "freellmapi": "",
     },
     "deep": {
         # Frontier 2026-Q2 — deep brain (user mandate 2026-04-29:
@@ -532,7 +530,6 @@ TIER_DEFAULTS_BY_PROVIDER: dict[str, dict[str, str]] = {
         # Local providers: empty = plugin-side discovery (see router tier).
         "ollama": "",
         "local-openai": "",
-        "freellmapi": "",
     },
 }
 
@@ -13946,22 +13943,6 @@ def _classify_provider_error(msg: str, *, default: str) -> str:
     # Anthropic account was retried on every turn). 403/429 stay word-driven on purpose:
     # a transient Gemini 403 "CachedContent not found" must NOT dead-list (BUG-019).
     code = _http_status_code(m)
-    # Google reports a revoked/invalid Gemini key as 400 INVALID_ARGUMENT, not
-    # as 401: the body says "API key not valid. Please pass a valid API key."
-    # Left as a bare 400 this landed in the generic call_fail bucket and the
-    # person was told the provider was unreachable — sending them to check the
-    # network for a key that was simply rejected (live 2026-11-21).
-    if code == 400 and any(
-        marker in m
-        for marker in (
-            "api key not valid",
-            "api_key_invalid",
-            "invalid api key",
-            "invalid_api_key",
-            "incorrect api key",
-        )
-    ):
-        return "bad_key"
     if code == 401:
         return "bad_key"
     if code == 402:

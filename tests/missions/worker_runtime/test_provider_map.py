@@ -201,12 +201,7 @@ def test_ad6_table_is_complete() -> None:
     slot name for shape only: no Agent key slot exists, so the worker proceeds
     keyless and the brain plugin supplies its own dummy SDK key. Their rows
     exist for the same reason as ``nvidia`` — without one, a user running a
-    local model cannot select it as a Jarvis-Agent at all.
-
-    ``freellmapi`` is the person's own FreeLLMApi router. It runs through the
-    in-process ApiAgentWorker like ``nvidia``; unlike the two keyless local
-    rows its unified key is a real credential, so its env slot is not a
-    placeholder."""
+    local model cannot select it as a Jarvis-Agent at all."""
     expected_jarvis_slugs = {
         "gemini",
         "claude-api",
@@ -218,9 +213,6 @@ def test_ad6_table_is_complete() -> None:
         "vertex",
         "ollama",
         "local-openai",
-        # The person's own unified router: an OpenAI-compatible gateway with a
-        # required unified key, run by the in-process ApiAgentWorker.
-        "freellmapi",
     }
     actual = {m.jarvis for m in MAPPINGS}
     assert actual == expected_jarvis_slugs, (

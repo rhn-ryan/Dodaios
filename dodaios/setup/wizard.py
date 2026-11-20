@@ -253,18 +253,6 @@ SECRETS: list[SecretSpec] = [
         required_for="Local server brain (only if your server enforces a key)",
         prompt=False,
     ),
-    # FreeLLMApi's unified key. Required by that router (it answers 401 without
-    # one), so it gets its own slot rather than reusing the optional local one;
-    # app-only, because first-run onboarding must not ask for a router the
-    # person has not installed.
-    SecretSpec(
-        key="freellmapi_api_key",
-        env_fallback="FREELLMAPI_API_KEY",
-        label="FreeLLMApi unified API key",
-        help_url="http://localhost:3001",
-        required_for="FreeLLMApi brain (local unified LLM router)",
-        prompt=False,
-    ),
     # Scoped Realtime credentials. They are app-only fields in the Realtime tab,
     # not extra first-run questions. Generic credentials remain compatibility
     # fallbacks for existing installations.

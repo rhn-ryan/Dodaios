@@ -94,8 +94,6 @@ AUTH_PROVIDER_ALIASES: dict[str, str] = {
     "openai-api": "openai",
     "openrouter": "openrouter",
     "litellm": "litellm",
-    # FreeLLMApi's unified key is its own slot (required by the router).
-    "freellmapi": "freellmapi",
     "groq": "groq",
     "groq-api": "groq",
     # Dedicated slot — Deepgram shares its key with nothing else.

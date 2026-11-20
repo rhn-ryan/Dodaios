@@ -86,9 +86,6 @@ _LADDERS: Final[dict[str, tuple[tuple[str, ...], str]]] = {
     "nvidia": (("", "none", "low", "medium", "high"), ""),
     "ollama": (("", "none", "low", "medium", "high", "max"), ""),
     "local-openai": (("", "none", "low", "medium", "high"), ""),
-    # The router forwards the effort hint to whichever upstream model serves
-    # the turn; models that ignore it simply answer without the knob.
-    "freellmapi": (("", "none", "low", "medium", "high"), ""),
 }
 
 _FALLBACK_LADDER: Final[tuple[tuple[str, ...], str]] = (("", "low", "medium", "high"), "")

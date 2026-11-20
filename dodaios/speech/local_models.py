@@ -642,11 +642,6 @@ _PARAKEET_ARCHIVE = (
 #: Where the sherpa-onnx project publishes its converted TTS voices.
 _PIPER_RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/"
 
-#: Kokoro natural local TTS (English). One bundle, multiple speaker ids inside.
-KOKORO_MODEL_ID = "kokoro-en-v0_19"
-_KOKORO_ARCHIVE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2"
-_KOKORO_DOWNLOAD_MB = 350
-
 
 def _piper_bundle(name: str, *, label: str, language: str, gender: str) -> SherpaBundle:
     """One Piper voice, named the way the upstream release names it.
@@ -750,14 +745,6 @@ SHERPA_BUNDLES: dict[str, SherpaBundle] = {
         language="es",
         gender="feminine",
     ),
-    KOKORO_MODEL_ID: SherpaBundle(
-        model_id=KOKORO_MODEL_ID,
-        label="Kokoro (English, natural)",
-        required_files=("model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"),
-        archive_url=_KOKORO_ARCHIVE,
-        language="en",
-        gender="feminine",
-    ),
 }
 
 #: The voices the local TTS install fetches — one per supported language, all
@@ -814,16 +801,6 @@ LOCAL_PROVIDERS: tuple[LocalProvider, ...] = (
         download_size=f"about {round(len(PIPER_DEFAULT_VOICES) * _PIPER_VOICE_DOWNLOAD_MB, -1)} MB",
         pip_package=SHERPA_ONNX_PACKAGE,
         bundles=PIPER_DEFAULT_VOICES,
-    ),
-    LocalProvider(
-        provider_id="kokoro-local",
-        tier="tts",
-        runtime="sherpa-onnx",
-        model_id=KOKORO_MODEL_ID,
-        model_label="Kokoro voice (English, natural)",
-        download_size=f"about {_KOKORO_DOWNLOAD_MB} MB",
-        pip_package=SHERPA_ONNX_PACKAGE,
-        bundles=(KOKORO_MODEL_ID,),
     ),
 )
 

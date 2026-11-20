@@ -413,21 +413,6 @@ PROVIDER_ROWS: Final[tuple[ProviderRow, ...]] = (
         models_source="live",
         keyless=True,
     ),
-    ProviderRow(
-        id="freellmapi",
-        label="FreeLLMApi",
-        # Its own family, not "local": the model picker collapses a family to
-        # one access choice (Local / API key / Subscription), so sharing the
-        # generic local slot's family made FLA's rail button resolve to that
-        # keyless row and its models never showed.
-        family="freellmapi",
-        runner="api",
-        models_source="live",
-        # The router lists its upstream catalog in alias-heavy order; start the
-        # picker on the model verified against the live router instead of
-        # whatever alias happens to sort first. The person can still pick any.
-        default_model="claude-haiku-4-5",
-    ),
 )
 
 _BY_ID: Final[dict[str, ProviderRow]] = {row.id: row for row in PROVIDER_ROWS}

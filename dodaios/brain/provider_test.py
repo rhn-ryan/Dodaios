@@ -188,20 +188,6 @@ def classify_provider_error(message: str | None) -> str:
     code_match = _HTTP_CODE_RE.search(msg)
     code = int(code_match.group(1)) if code_match else None
 
-    # A rejected Google key arrives as 400 INVALID_ARGUMENT ("API key not
-    # valid"), never 401. Without this it read as a generic error and the card
-    # blamed the connection for a credential the provider had refused.
-    if code == 400 and any(
-        marker in msg
-        for marker in (
-            "api key not valid",
-            "api_key_invalid",
-            "invalid api key",
-            "invalid_api_key",
-            "incorrect api key",
-        )
-    ):
-        return BAD_KEY
     if code == 401:
         return BAD_KEY
     if code == 402:

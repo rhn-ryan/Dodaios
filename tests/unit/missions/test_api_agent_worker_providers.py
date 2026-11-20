@@ -28,11 +28,10 @@ def test_every_api_agent_provider_has_a_default_model():
     from dodaios.brain.app_control import LOCAL_PROVIDERS
 
     for provider in _BRAIN_BY_PROVIDER:
-        if provider in LOCAL_PROVIDERS or provider in ("litellm", "freellmapi"):
-            # Local servers and gateways (a LiteLLM proxy, FreeLLMApi) have no
-            # knowable catalog ahead of time — no documented default; the
-            # plugin discovers the first chat model (_resolve_worker_model
-            # falls to "" → discovery).
+        if provider in LOCAL_PROVIDERS or provider == "litellm":
+            # Local servers and a LiteLLM proxy have no knowable catalog ahead
+            # of time — no documented default; the plugin discovers the first
+            # chat model (_resolve_worker_model falls to "" → discovery).
             assert not _DEFAULT_MODEL.get(provider)
             continue
         assert _DEFAULT_MODEL.get(provider), f"{provider} has no documented default model"
