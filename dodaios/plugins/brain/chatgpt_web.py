@@ -54,6 +54,10 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Iterable, Mapping
 
+import json as _json
+
+import httpx
+
 from dodaios.core.protocols import Brain, BrainDelta, BrainMessage, BrainRequest
 
 log = logging.getLogger(__name__)
@@ -83,6 +87,15 @@ class ChatGPTWebConfig:
     duplicate_window_s: float = 10.0
     # Request tracking retention.
     request_retention: int = 256
+    # HTTP transport settings (used by HttpChatGPTWebTransport).
+    base_url: str = "https://chatgpt.com"
+    model: str = "gpt-4o"
+    cookies_file: str = ""
+    access_token: str = ""
+    user_agent: str = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +360,197 @@ class ChatGPTWebTransport:
 
 
 # ---------------------------------------------------------------------------
+# HTTP transport (ChatGPT web backend API)
+# ---------------------------------------------------------------------------
+
+
+class HttpChatGPTWebTransport(ChatGPTWebTransport):
+    """Transport that talks to ChatGPT's web backend over HTTP.
+
+    This reuses the existing HTTP stack (httpx) instead of duplicating a
+    connectivity system. Authentication is based on the browser session
+    cookies of a logged-in ChatGPT account; the access token is fetched from
+    ``/api/auth/session``. Cookies can be persisted to ``cookies_file`` so the
+    authenticated session survives restarts.
+
+    Terms-of-service note: this drives ChatGPT's (undocumented) web backend.
+    Operators must ensure their usage complies with OpenAI's terms.
+    """
+
+    def __init__(self, config: ChatGPTWebConfig | None = None) -> None:
+        self.config = config or ChatGPTWebConfig()
+        self._client: httpx.AsyncClient | None = None
+        self._access_token: str = self.config.access_token
+        self._conversation_map: dict[str, tuple[str, str]] = {}  # dodaios conv -> (chatgpt conv id, parent msg id)
+        self._cookies_loaded = False
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            cookies = None
+            if self.config.cookies_file:
+                try:
+                    import pathlib
+
+                    p = pathlib.Path(self.config.cookies_file)
+                    if p.is_file():
+                        data = _json.loads(p.read_text(encoding="utf-8"))
+                        cookies = httpx.Cookies()
+                        for c in data:
+                            cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
+                except Exception:  # noqa: BLE001
+                    log.debug("could not load cookies file", exc_info=True)
+            self._client = httpx.AsyncClient(
+                base_url=self.config.base_url,
+                cookies=cookies,
+                headers={"User-Agent": self.config.user_agent},
+                timeout=httpx.Timeout(30.0, read=self.config.poll_timeout_s),
+                follow_redirects=True,
+            )
+        return self._client
+
+    async def _save_cookies(self) -> None:
+        if not self.config.cookies_file or self._client is None:
+            return
+        try:
+            import pathlib
+
+            rows = []
+            for cookie in self._client.cookies.jar:
+                rows.append(
+                    {
+                        "name": cookie.name,
+                        "value": cookie.value,
+                        "domain": cookie.domain,
+                    }
+                )
+            pathlib.Path(self.config.cookies_file).write_text(
+                _json.dumps(rows), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("could not save cookies file", exc_info=True)
+
+    async def is_authenticated(self) -> bool:
+        try:
+            client = self._ensure_client()
+            resp = await client.get("/api/auth/session")
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+            token = data.get("accessToken")
+            if token:
+                self._access_token = token
+                await self._save_cookies()
+                return True
+            return False
+        except Exception:  # noqa: BLE001
+            log.debug("auth session probe failed", exc_info=True)
+            return False
+
+    async def _fetch_token(self) -> str:
+        if self._access_token:
+            return self._access_token
+        client = self._ensure_client()
+        resp = await client.get("/api/auth/session")
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("accessToken")
+        if not token:
+            raise RuntimeError("ChatGPT session is not authenticated")
+        self._access_token = token
+        await self._save_cookies()
+        return token
+
+    async def send_and_receive(
+        self,
+        conversation_id: str,
+        prompt: str,
+        *,
+        poll_interval_s: float,
+        poll_timeout_s: float,
+        max_polls: int,
+    ) -> str:
+        token = await self._fetch_token()
+        client = self._ensure_client()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        msg_id = str(__import__("uuid").uuid4())
+        cg_conv_id, parent_id = self._conversation_map.get(conversation_id, (None, None))
+        if parent_id is None:
+            parent_id = str(__import__("uuid").uuid4())
+
+        body: dict[str, Any] = {
+            "action": "next",
+            "messages": [
+                {
+                    "id": msg_id,
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": [prompt]},
+                }
+            ],
+            "parent_message_id": parent_id,
+            "model": self.config.model,
+            "timezone_offset_min": 0,
+            "history_and_training_disabled": False,
+            "conversation_mode": {"kind": "primary_assistant"},
+            "force_paragen": False,
+            "force_rate_limit": False,
+        }
+        if cg_conv_id:
+            body["conversation_id"] = cg_conv_id
+
+        collected: list[str] = []
+        new_conv_id = cg_conv_id
+        new_parent = parent_id
+        async with client.stream(
+            "POST", "/backend-api/conversation", headers=headers, json=body
+        ) as resp:
+            if resp.status_code != 200:
+                text = await resp.aread()
+                raise RuntimeError(
+                    f"ChatGPT backend returned HTTP {resp.status_code}: {text[:300]!r}"
+                )
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    obj = _json.loads(payload)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    if obj.get("conversation_id"):
+                        new_conv_id = obj["conversation_id"]
+                    msg = obj.get("message")
+                    if isinstance(msg, dict):
+                        content = msg.get("content")
+                        if isinstance(content, dict):
+                            parts = content.get("parts")
+                            if isinstance(parts, list):
+                                text = "".join(str(p) for p in parts if isinstance(p, str))
+                                if text:
+                                    collected = [text]
+                        mid = msg.get("id")
+                        if isinstance(mid, str):
+                            new_parent = mid
+
+        self._conversation_map[conversation_id] = (new_conv_id, new_parent)
+        await self._save_cookies()
+        if not collected:
+            raise RuntimeError("ChatGPT web returned no response")
+        return collected[-1] if collected else ""
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+
+# ---------------------------------------------------------------------------
 # Session (shared identity)
 # ---------------------------------------------------------------------------
 
@@ -542,8 +746,11 @@ class ChatGPTWebBrain(Brain):
         transport: ChatGPTWebTransport | None = None,
         shared_context: str = "",
         conversation_id: str | None = None,
+        http: bool = False,
     ) -> None:
         self._model = model or "chatgpt-web"
+        if transport is None and http:
+            transport = HttpChatGPTWebTransport(config)
         self.session = ChatGPTWebSession(
             config=config, transport=transport, shared_context=shared_context
         )
@@ -617,6 +824,7 @@ __all__ = [
     "ChatGPTWebRequest",
     "RequestTracker",
     "ChatGPTWebTransport",
+    "HttpChatGPTWebTransport",
     "ChatGPTWebSession",
     "ChatGPTWebBrain",
     "ChatGPTWebBackend",
