@@ -61,6 +61,14 @@ APP_ID = "com.dodaios.Launcher"
 APP_NAME = "Dodaios Launcher"
 DEFAULT_PORT = 47821
 
+# FreeLLMApi — the local OpenAI-compatible router Dodaios can use as a brain.
+# The launcher manages its server too, so one click brings up both halves.
+FLA_PORT = 3001
+FLA_HOME = Path(
+    os.environ.get("FREELMAPI_HOME")
+    or (Path.home() / ".local" / "share" / "freellmapi-app")
+).expanduser()
+
 # Longest a cold boot may take before the launcher calls it stuck. A first run
 # on a slow disk loads ~50 registries and a 54-skill scan; measured cold boots
 # are 10-25 s, so 180 s only fires on a genuine hang.
@@ -102,6 +110,21 @@ def frontend_built() -> bool:
 # ---------------------------------------------------------------------------
 # Controller — all lifecycle logic, no GUI imports
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class FlaStatus:
+    """The FreeLLMApi router beside the server: same shape, smaller surface."""
+
+    state: str  # running | starting | stopped | port-taken | not-found
+    port: int = FLA_PORT
+    pid: int | None = None
+    detail: str = ""
+    log: str = field(default_factory=lambda: str(state_dir() / "freellmapi.log"))
+
+    @property
+    def running(self) -> bool:
+        return self.state == "running"
 
 
 @dataclass
@@ -243,6 +266,177 @@ class Controller:
             return data if isinstance(data, dict) else {}
         except Exception:  # noqa: BLE001 — absent/corrupt state is simply "unknown"
             return {}
+
+    # -- FreeLLMApi router -------------------------------------------------
+
+    def fla_server_script(self) -> Path:
+        return FLA_HOME / "server" / "dist" / "index.js"
+
+    def fla_runtime(self) -> tuple[list[str], str | None]:
+        """How to start the router headlessly, or why it cannot start.
+
+        The desktop viewer found in this install is only a browser window; the
+        router itself is ``node server/dist/index.js`` run from the install
+        root (that is how the app's own launcher starts it, and it is where
+        ``.env`` and the SQLite database are read from).
+        """
+        script = self.fla_server_script()
+        if not script.is_file():
+            return [], (
+                f"No FreeLLMApi server found at {script}. Install FreeLLMApi, or "
+                "set FREELMAPI_HOME to its folder, then try again."
+            )
+        node = shutil.which("node")
+        if not node:
+            return [], "Node.js is not on PATH, so the FreeLLMApi server cannot start."
+        return [node, str(script)], None
+
+    def fla_health(self, timeout: float = HEALTH_TIMEOUT_S) -> bool:
+        """Is the router answering? ``/`` is public; ``/v1`` needs its key."""
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(f"http://127.0.0.1:{FLA_PORT}/", timeout=timeout) as response:
+                return 200 <= response.status < 500
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return False
+
+    @staticmethod
+    def pid_is_freellmapi(pid: int) -> bool:
+        """Refuse to signal a stranger that happened to take port 3001."""
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return pid > 0
+        cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace")
+        return "freellmapi" in cmdline.lower() or "server/dist/index.js" in cmdline
+
+    def fla_status(self, health_timeout: float = HEALTH_TIMEOUT_S) -> FlaStatus:
+        """Resolve the router the same way ``status`` resolves the server."""
+        script = self.fla_server_script()
+        if not script.is_file():
+            return FlaStatus(
+                state="not-found",
+                detail=(
+                    f"FreeLLMApi was not found at {FLA_HOME}. Set FREELMAPI_HOME "
+                    "to its folder to manage it from here."
+                ),
+            )
+        if self.fla_health(timeout=health_timeout):
+            pid = self.pid_on_port(FLA_PORT)
+            return FlaStatus(
+                state="running",
+                pid=pid,
+                detail="Running — Dodaios can use this router as a provider.",
+            )
+        pid = self.pid_on_port(FLA_PORT)
+        if pid is not None:
+            return FlaStatus(
+                state="starting" if self.pid_is_freellmapi(pid) else "port-taken",
+                pid=pid,
+                detail=(
+                    "Starting — waiting for the router to answer."
+                    if self.pid_is_freellmapi(pid)
+                    else f"Port {FLA_PORT} is held by another process (pid {pid})."
+                ),
+            )
+        if self.port_in_use(FLA_PORT):
+            return FlaStatus(
+                state="port-taken",
+                detail=f"Port {FLA_PORT} is in use by another service.",
+            )
+        return FlaStatus(state="stopped", detail="Stopped — start it to use FreeLLMApi.")
+
+    def fla_start(self) -> tuple[bool, str]:
+        """Spawn the router detached, into its own log. Never raises."""
+        current = self.fla_status(health_timeout=0.5)
+        if current.state == "running":
+            return True, f"FreeLLMApi is already running on port {FLA_PORT}."
+        if current.state == "not-found":
+            return False, current.detail
+        if current.state == "port-taken":
+            return False, current.detail
+        if current.state == "starting":
+            return True, current.detail
+        cmd, missing = self.fla_runtime()
+        if missing:
+            return False, missing
+
+        path = Path(current.log)
+        try:
+            handle = open(path, "ab", buffering=0)  # noqa: SIM115 — child owns it
+        except OSError as exc:
+            return False, f"Cannot open the FreeLLMApi log {path}: {exc}"
+        handle.write(
+            f"\n===== FreeLLMApi: starting at {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n".encode()
+        )
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(FLA_HOME),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as exc:
+            handle.write(f"spawn failed: {exc}\n".encode())
+            handle.close()
+            return False, f"Could not start the FreeLLMApi server: {exc}"
+        finally:
+            handle.close()
+
+        self._write_state(fla_pid=proc.pid, fla_port=FLA_PORT, fla_started_at=time.time())
+        return True, f"Starting FreeLLMApi (pid {proc.pid})…"
+
+    def fla_stop(self, timeout: float = 10.0) -> tuple[bool, str]:
+        """Stop the router, whether this launcher started it or not."""
+        current = self.fla_status(health_timeout=0.5)
+        if current.state == "stopped":
+            return True, "FreeLLMApi is already stopped."
+        if current.state == "not-found":
+            return False, current.detail
+        if current.state == "port-taken":
+            return False, current.detail
+        pid = current.pid or self.pid_on_port(FLA_PORT)
+        if pid is None:
+            return True, "FreeLLMApi is already stopped."
+        if not self.pid_is_freellmapi(pid):
+            return False, (
+                f"Port {FLA_PORT} belongs to pid {pid}, which is not the FreeLLMApi "
+                "server. Stop that process from its owner."
+            )
+        # Only signal the process group when this process leads its own group
+        # (the one we spawn). An existing router started by its own launcher
+        # shares a group with that shell, and killpg would take the shell down.
+        try:
+            grouped = os.getpgid(pid) == pid
+        except OSError:
+            grouped = False
+        try:
+            if grouped:
+                os.killpg(pid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except OSError as exc:
+            return False, f"Could not stop FreeLLMApi (pid {pid}): {exc}"
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.pid_on_port(FLA_PORT) is None and not self.fla_health(0.3):
+                self._write_state(fla_pid=None)
+                return True, "FreeLLMApi stopped."
+            time.sleep(0.2)
+        with contextlib.suppress(OSError):
+            if grouped:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        self._write_state(fla_pid=None)
+        return True, "FreeLLMApi stopped (had to force-kill)."
 
     def _write_state(self, **updates: object) -> None:
         data = self.read_state()
@@ -911,6 +1105,56 @@ class LauncherWindow:
             actions.append(button)
         root.append(actions)
 
+        # FreeLLMApi router card. The router is a separate Node process on
+        # 127.0.0.1:3001; managing it here is what makes "start Dodaios and use
+        # FLA" one action instead of two.
+        fla_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        fla_card.add_css_class("card")
+        fla_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.fla_dot = Gtk.Box()
+        self.fla_dot.add_css_class("status-dot")
+        self.fla_dot.set_valign(Gtk.Align.CENTER)
+        fla_head.append(self.fla_dot)
+        self.fla_state_label = Gtk.Label(label="FreeLLMApi router")
+        self.fla_state_label.add_css_class("hero-title")
+        self.fla_state_label.set_xalign(0)
+        fla_head.append(self.fla_state_label)
+        self.fla_meta_label = Gtk.Label(label="")
+        self.fla_meta_label.add_css_class("dim")
+        self.fla_meta_label.set_xalign(1)
+        self.fla_meta_label.set_hexpand(True)
+        fla_head.append(self.fla_meta_label)
+        fla_card.append(fla_head)
+
+        self.fla_detail_label = Gtk.Label(label="")
+        self.fla_detail_label.set_xalign(0)
+        self.fla_detail_label.set_wrap(True)
+        self.fla_detail_label.add_css_class("dim")
+        fla_card.append(self.fla_detail_label)
+
+        fla_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.fla_start_button = Gtk.Button(label="Start router")
+        self.fla_start_button.add_css_class("suggested-action")
+        self.fla_start_button.connect("clicked", self._on_fla_start)
+        self.fla_stop_button = Gtk.Button(label="Stop router")
+        self.fla_stop_button.connect("clicked", self._on_fla_stop)
+        self.fla_open_button = Gtk.Button(label="Open router")
+        self.fla_open_button.connect("clicked", self._on_open_fla)
+        self.fla_auto_switch = Gtk.CheckButton(label="Start FreeLLMApi with Dodaios")
+        self.fla_auto_switch.set_active(
+            bool(self.controller.read_state().get("auto_start_fla", True))
+        )
+        self.fla_auto_switch.connect("toggled", self._on_fla_auto_toggled)
+        for widget in (
+            self.fla_start_button,
+            self.fla_stop_button,
+            self.fla_open_button,
+        ):
+            fla_actions.append(widget)
+        fla_actions.append(self.fla_auto_switch)
+        fla_card.append(fla_actions)
+        root.append(fla_card)
+
         # Options. Check buttons rather than switches: the GTK theme on some
         # desktops measures a squeezed Gtk.Switch slider at -2 px and logs an
         # allocation warning on every launch.
@@ -1067,6 +1311,34 @@ class LauncherWindow:
             self.detail_label.set_text(detail)
         self.url_label.set_text(status.url if status.state in ("running", "starting") else "")
 
+        # The router card paints from its own probe; a dead router must never
+        # make the Dodaios status look wrong, or the other way round.
+        fla = self.controller.fla_status(health_timeout=0.5)
+        self._current_fla = fla
+        fla_labels = {
+            "running": "FreeLLMApi running",
+            "starting": "FreeLLMApi starting…",
+            "stopped": "FreeLLMApi stopped",
+            "port-taken": "FreeLLMApi port in use",
+            "not-found": "FreeLLMApi not installed",
+        }
+        self.fla_state_label.set_text(fla_labels.get(fla.state, fla.state))
+        self.fla_detail_label.set_text(fla.detail)
+        self.fla_meta_label.set_text(
+            f"port {fla.port}" + (f"  ·  pid {fla.pid}" if fla.pid else "")
+        )
+        for cls in ("running", "starting", "failed"):
+            self.fla_dot.remove_css_class(cls)
+        if fla.state == "running":
+            self.fla_dot.add_css_class("running")
+        elif fla.state == "starting":
+            self.fla_dot.add_css_class("starting")
+        elif fla.state in ("port-taken", "not-found"):
+            self.fla_dot.add_css_class("failed")
+        self.fla_start_button.set_sensitive(fla.state in ("stopped", "not-found"))
+        self.fla_stop_button.set_sensitive(fla.state in ("running", "starting"))
+        self.fla_open_button.set_sensitive(fla.state in ("running", "starting"))
+
         meta_bits = []
         if status.version:
             meta_bits.append(f"v{status.version}")
@@ -1164,6 +1436,10 @@ class LauncherWindow:
             self._end_busy()
             if ok:
                 self._notify("Dodaios is ready", self.controller.status().url)
+                # Start the router only after the server is actually serving,
+                # so a slow FLA boot can never delay or fail a Dodaios launch.
+                if self.fla_auto_switch.get_active():
+                    self.controller.fla_start()
                 if self.open_browser_switch.get_active():
                     self.controller.open_url()
                 self.detail_label.set_text(message)
@@ -1217,6 +1493,41 @@ class LauncherWindow:
                 self._on_start()
 
         dialog.choose(self.window, None, on_choice)
+
+    def _on_fla_start(self, _button=None) -> None:
+        def done(result):
+            ok, message = result
+            if not ok:
+                self._show_error("FreeLLMApi did not start", message)
+            self.fla_detail_label.set_text(message)
+            self._refresh()
+
+        self._run_in_thread(self.controller.fla_start, done)
+
+    def _on_fla_stop(self, _button=None) -> None:
+        def done(result):
+            ok, message = result
+            if not ok:
+                self._show_error("Could not stop FreeLLMApi", message)
+            self.fla_detail_label.set_text(message)
+            self._refresh()
+
+        self._run_in_thread(self.controller.fla_stop, done)
+
+    def _on_open_fla(self, _button=None) -> None:
+        url = f"http://127.0.0.1:{FLA_PORT}"
+        try:
+            self._Gio.AppInfo.launch_default_for_uri(url, None)
+        except Exception:  # noqa: BLE001 — no portal/DBus: fall back to the opener
+            try:
+                import webbrowser
+
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 — nothing to open with
+                pass
+
+    def _on_fla_auto_toggled(self, switch) -> None:
+        self.controller._write_state(auto_start_fla=bool(switch.get_active()))
 
     def _on_stop(self, _button=None) -> None:
         if self.busy:
@@ -1447,7 +1758,9 @@ def main(argv: list[str] | None = None) -> int:
 
     controller = Controller(port=args.port)
     if args.status:
-        print(json.dumps(asdict(controller.status()), indent=2))
+        payload = asdict(controller.status())
+        payload["freellmapi"] = asdict(controller.fla_status())
+        print(json.dumps(payload, indent=2))
         return 0
 
     return run_gui(controller, [])

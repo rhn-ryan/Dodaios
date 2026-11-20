@@ -416,7 +416,11 @@ PROVIDER_ROWS: Final[tuple[ProviderRow, ...]] = (
     ProviderRow(
         id="freellmapi",
         label="FreeLLMApi",
-        family="local",
+        # Its own family, not "local": the model picker collapses a family to
+        # one access choice (Local / API key / Subscription), so sharing the
+        # generic local slot's family made FLA's rail button resolve to that
+        # keyless row and its models never showed.
+        family="freellmapi",
         runner="api",
         models_source="live",
         # The router lists its upstream catalog in alias-heavy order; start the
