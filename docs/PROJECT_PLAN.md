@@ -246,6 +246,8 @@ investigations and returns one merged review — no writes, no autonomous loops.
 - Work on `main` only for small fixes; use a feature branch for a milestone wave
   (`feat/<short-name>`), commit at coherent points, and never rewrite history.
 - `dist/` is generated and untracked; rebuild it, do not commit it.
+- When the browser handshake times out, the call falls back to the classic
+  desktop pipeline instead of failing with 'no reason reported'.
 - Tests: run focused files. Known useful commands:
   - `python -m pytest -q tests/unit/agent_chat`
   - `python -m pytest -q tests/unit/brain/test_model_catalog.py tests/unit/test_tier_defaults.py`
