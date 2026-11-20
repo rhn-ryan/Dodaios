@@ -595,6 +595,7 @@ vertex-stt = "dodaios.plugins.stt.gemini_api:VertexSTT"
 # piper1-gpl library. Native sherpa builds can still include GPL-licensed
 # phonemization components; redistribution must account for their own terms.
 piper-local = "dodaios.plugins.tts.piper_local:PiperLocalTTS"
+kokoro-local = "dodaios.plugins.tts.kokoro_local:KokoroLocalTTS"
 inworld = "dodaios.plugins.tts.inworld_tts:InworldTTS"
 elevenlabs = "dodaios.plugins.tts.elevenlabs_tts:ElevenLabsTTS"
 gemini-flash-tts = "dodaios.plugins.tts.gemini_flash_tts:GeminiFlashTTS"
@@ -639,6 +640,12 @@ deepseek = "dodaios.plugins.brain.deepseek:DeepSeekBrain"
 # serve, llama.cpp llama-server, vLLM, and LM Studio with one adapter.
 ollama = "dodaios.plugins.brain.ollama:OllamaBrain"
 local-openai = "dodaios.plugins.brain.local_openai:LocalOpenAIBrain"
+# FreeLLMApi: the person's own unified LLM router (OpenAI-compatible) on this
+# machine or the LAN. Same adapter as local-openai, with its own default
+# address and required unified key so it is a distinct, selectable provider.
+freellmapi = "dodaios.plugins.brain.freellmapi:FreeLLMAPIBrain"
+# ChatGPT web chat as a persistent conversational backend (optional).
+chatgpt-web = "dodaios.plugins.brain.chatgpt_web:ChatGPTWebBrain"
 
 [project.entry-points."jarvis.harness"]
 python-script = "dodaios.plugins.harness.python_script:PythonScriptHarness"

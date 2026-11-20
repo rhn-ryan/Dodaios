@@ -68,6 +68,9 @@ dodaios/ui/web/.frontend-*
 # Jarvis Runtime-Daten (nie committen)
 data/*
 data/**/
+# Instance-specific runtime data directories (never commit)
+data-original/
+data-fresh/
 # The dev instance's runtime data (dodaios/core/instance.py) — same rule as data/.
 data-dev/
 *.db

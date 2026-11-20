@@ -228,6 +228,10 @@ PROVIDER_SECRET_CANDIDATES: dict[str, tuple[tuple[str, str], ...]] = {
         ("litellm_api_key", "LITELLM_API_KEY"),
         ("litellm_master_key", "LITELLM_MASTER_KEY"),
     ),
+    # FreeLLMApi: the user's own unified router. Its "unified API key" is the
+    # only credential; it is REQUIRED (the router answers 401 without it), which
+    # is why this slot exists separately from the generic local-openai one.
+    "freellmapi": (("freellmapi_api_key", "FREELLMAPI_API_KEY"),),
     # Groq remains a speech-to-text credential family even though it is not a
     # selectable brain provider.
     "groq": (("groq_api_key", "GROQ_API_KEY"),),

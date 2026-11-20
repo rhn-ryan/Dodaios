@@ -152,6 +152,10 @@ MAPPINGS: Final[tuple[ProviderMapping, ...]] = (
     # (the brain plugins supply their own dummy SDK key).
     ProviderMapping("ollama", "ollama", "OLLAMA_API_KEY"),
     ProviderMapping("local-openai", "local-openai", "LOCAL_OPENAI_API_KEY"),
+    # FreeLLMApi runs through the in-process ApiAgentWorker too; the row is
+    # what makes it selectable in the Agents tab. Its unified key is a real
+    # credential (unlike the two rows above), read from its own slot.
+    ProviderMapping("freellmapi", "freellmapi", "FREELLMAPI_API_KEY"),
 )
 
 

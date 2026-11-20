@@ -696,6 +696,32 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         ),
         supports_base_url=True,
     ),
+    # FreeLLMApi: the person's own unified router (one OpenAI-compatible
+    # endpoint in front of every provider/model it is configured with). Its own
+    # card, not a preset on the generic slot above, because the two differ in
+    # facts the UI must state: FLA has a known default address and a REQUIRED
+    # unified key, while the generic slot has neither.
+    ProviderSpec(
+        id="freellmapi",
+        label="FreeLLMApi (local router)",
+        tier="brain",
+        auth_mode="api_key",
+        secret_keys=("freellmapi_api_key",),
+        dashboard_url="http://localhost:3001",
+        signup_url="https://github.com/tashfeenahmed/freellmapi",
+        credential_help=(
+            "The unified API key from your FreeLLMApi dashboard (Keys page "
+            "header). FreeLLMApi runs on this machine and gives one "
+            "OpenAI-compatible endpoint to every provider and model you "
+            "configured there, so one key reaches all of them. The server "
+            "URL defaults to http://127.0.0.1:3001 — change it if the router "
+            "listens elsewhere or on another machine. Nothing is sent to a "
+            "cloud by Dodaios itself: the router decides where each model "
+            "runs."
+        ),
+        supports_base_url=True,
+        default_base_url="http://127.0.0.1:3001",
+    ),
     # ── TTS ───────────────────────────────────────────────────────────────
     # Voice-Output cards render in this tuple order. OpenRouter leads (one key
     # reaches many vetted speech models); Inworld sits last as a premium
@@ -828,6 +854,22 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "voices sound good rather "
             "than indistinguishable from a person; a hosted provider is still "
             "the more natural-sounding option."
+        ),
+    ),
+    ProviderSpec(
+        id="kokoro-local",
+        label="Kokoro (on this machine, natural)",
+        tier="tts",
+        auth_mode="none",
+        secret_keys=(),
+        dashboard_url=None,
+        signup_url=None,
+        credential_help=(
+            "Speaks on this machine — no API key, no cloud account, nothing "
+            "sent anywhere. Kokoro is a more natural-sounding local voice than "
+            "Piper (82M parameters, multiple English voices) and runs on the "
+            "CPU. The download is about 350 MB. English only; German and other "
+            "languages fall back to an English accent or to Piper."
         ),
     ),
     # ── STT ───────────────────────────────────────────────────────────────

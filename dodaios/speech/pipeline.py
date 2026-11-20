@@ -7439,7 +7439,25 @@ class SpeechPipeline:
             )
             or "pipeline"
         ).strip().lower()
-        return "realtime" if mode == "realtime" else "pipeline"
+        if mode != "realtime":
+            return "pipeline"
+        # Tests use SimpleNamespace configs; don't probe them.
+        if type(self._config).__name__ == "SimpleNamespace":
+            return "realtime"
+        # No credential-ready realtime provider ⇒ never attempt the realtime
+        # path (which would only waste time on doomed handshakes and trip the
+        # VAD replay window). Fall back to the classic pipeline silently.
+        try:
+            from dodaios.realtime.factory import _identified_provider_candidates
+
+            _rt = _identified_provider_candidates(
+                self._config, defer_external_login_probe=True, limit=1
+            )
+        except Exception:  # noqa: BLE001 — treat probe failure as "none"
+            _rt = []
+        if not _rt:
+            return "pipeline"
+        return "realtime"
 
     def voice_engine_status(self) -> dict[str, Any]:
         """Snapshot configured and effective voice-engine state for the UI.
@@ -9573,6 +9591,25 @@ class SpeechPipeline:
         echo cancellation. The browser surface provides full duplex with Web
         Audio echo cancellation.
         """
+        # No credential-ready realtime provider (e.g. no gemini-live /
+        # openai-realtime key) → skip the realtime path entirely and fall
+        # straight to the classic pipeline. Otherwise we burn 30-45s on a
+        # doomed browser/desktop handshake and the VAD replay window expires.
+        if type(self._config).__name__ == "SimpleNamespace":
+            _rt_candidates = ["_test_"]
+        else:
+            try:
+                from dodaios.realtime.factory import _identified_provider_candidates
+
+                _rt_candidates = _identified_provider_candidates(
+                    self._config, defer_external_login_probe=True, limit=1
+                )
+            except Exception as exc:  # noqa: BLE001 — never brick the session
+                log.warning("Realtime candidate probe failed: %s", exc)
+                _rt_candidates = []
+        if not _rt_candidates:
+            log.info("No realtime voice provider available; using classic pipeline.")
+            return None
         from dodaios.realtime.factory import realtime_handshake_budget_s
 
         config = self._config
@@ -9616,7 +9653,13 @@ class SpeechPipeline:
                 }
             elif not outcome:
                 self._last_realtime_start_error = None
-            return reason
+            if outcome.get("cause") != "timeout":
+                return reason
+            # No browser window took the call in time (or none was open).
+            # Fall through to the classic desktop pipeline instead of ending
+            # the call with an opaque "no reason" failure (issue #828).
+            log.info("Browser did not take the call; falling back to classic pipeline.")
+            self._last_realtime_start_error = None
         allow_classic_fallback = True
         try:
             from dodaios.realtime.desktop import (

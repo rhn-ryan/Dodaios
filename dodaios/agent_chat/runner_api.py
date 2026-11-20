@@ -67,6 +67,7 @@ BRAIN_BY_PROVIDER: Final[dict[str, tuple[str, str]]] = {
     "vertex": ("dodaios.plugins.brain.vertex", "VertexBrain"),
     "ollama": ("dodaios.plugins.brain.ollama", "OllamaBrain"),
     "local-openai": ("dodaios.plugins.brain.local_openai", "LocalOpenAIBrain"),
+    "freellmapi": ("dodaios.plugins.brain.freellmapi", "FreeLLMAPIBrain"),
 }
 
 MAX_ROUNDS: Final[int] = 40
