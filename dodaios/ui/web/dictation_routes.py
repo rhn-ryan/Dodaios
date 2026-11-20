@@ -90,14 +90,44 @@ def _config(request: Request) -> Any:
     return getattr(request.app.state, "config", None)
 
 
-def _pipeline() -> Any:
-    """The live SpeechPipeline, or ``None`` (headless / voice disabled)."""
+def _pipeline(request: Any = None) -> Any:
+    """The live SpeechPipeline, or a HeadlessDictationPipeline if STT is configured.
+
+    Falls back to a headless pipeline when no native SpeechPipeline is available
+    but STT keys are configured — this enables dictation on headless servers.
+    """
     try:
         from dodaios.core.runtime_refs import get_speech_pipeline
 
-        return get_speech_pipeline()
+        pipeline = get_speech_pipeline()
+        if pipeline is not None:
+            return pipeline
     except Exception:  # noqa: BLE001 — a missing runtime ref is "no pipeline"
-        return None
+        pass
+
+    # No native pipeline; try headless if STT is configured
+    try:
+        from dodaios.ui.web.headless_dictation import get_headless_pipeline
+
+        # Only attempt headless dictation if STT is configured in the app config
+        if request is not None:
+            try:
+                # Check the app config for STT provider
+                app_cfg = getattr(request.app.state, "config", None)
+                if app_cfg is not None:
+                    stt_provider = getattr(app_cfg, "stt", None)
+                    if stt_provider is not None and str(getattr(stt_provider, "provider", "")).strip():
+                        # Has real STT config, try headless pipeline
+                        hp = get_headless_pipeline()
+                        if hp is not None and hp.dictation_available:
+                            return hp
+            except Exception:
+                pass
+        # No headless pipeline available for this request
+    except Exception:  # noqa: BLE001 — headless init failure is graceful
+        pass
+
+    return None
 
 
 def _dictation_cfg(request: Request) -> Any:
@@ -611,7 +641,7 @@ async def get_status(request: Request) -> dict[str, Any]:
     Answers honestly on a host that cannot do it rather than hiding the
     feature: ``available`` false plus a ``reason`` the UI can show.
     """
-    pipeline = _pipeline()
+    pipeline = _pipeline(request)
     cfg = _config(request)
     trigger = getattr(cfg, "trigger", None) if cfg is not None else None
     dictation = _dictation_cfg(request)
