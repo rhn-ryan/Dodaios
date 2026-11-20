@@ -332,6 +332,8 @@ PROVIDER_ALIASES = {
     "sonnet": "claude-api",
     "gpt": "openai",
     "chatgpt": "openai",
+    "chatgpt-web": "chatgpt-web",
+    "chatgpt web": "chatgpt-web",
     "openai": "openai",
     "gemini": "gemini",
     "flash": "gemini",

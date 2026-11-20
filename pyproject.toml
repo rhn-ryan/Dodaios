@@ -644,6 +644,8 @@ local-openai = "dodaios.plugins.brain.local_openai:LocalOpenAIBrain"
 # machine or the LAN. Same adapter as local-openai, with its own default
 # address and required unified key so it is a distinct, selectable provider.
 freellmapi = "dodaios.plugins.brain.freellmapi:FreeLLMAPIBrain"
+# ChatGPT web chat as a persistent conversational backend (optional).
+chatgpt-web = "dodaios.plugins.brain.chatgpt_web:ChatGPTWebBrain"
 
 [project.entry-points."jarvis.harness"]
 python-script = "dodaios.plugins.harness.python_script:PythonScriptHarness"
