@@ -47,7 +47,7 @@ new state.
 | Working chat brain | FreeLLMApi (`http://127.0.0.1:3001`, model `claude-haiku-4-5`) |
 | Wake word | `Hakuna matata`, engine resolved to local `stt_match` (phrase is OOV for Vosk) |
 | Dictation STT | Groq `whisper-large-v3-turbo` (working) |
-| Spoken replies | Gemini TTS is silent (invalid key); local Kokoro work is in M3 |
+| Spoken replies | Kokoro local TTS landed (kokoro-local); Gemini TTS still keyless/broken |
 | FreeLLMApi | running as `node server/dist/index.js` from `~/.local/share/freellmapi-app` |
 
 ---
@@ -61,7 +61,7 @@ Status legend: **done** · **in progress** · **next** · **blocked** · **desig
 | M0 | Provider and key health | **done** | Every configured provider tested live; bad keys classified as `bad_key`, not "unreachable" |
 | M1 | Wake word on Linux | **done** | "Hakuna matata" wakes the assistant; local transcript match; no cloud upload of wake audio |
 | M2 | FreeLLMApi as a first-class provider | **in progress** | FLA selectable in home chat and IDE; real turn succeeds; picker shows a distinct FLA section |
-| M3 | Live voice replies + natural local TTS | **in progress** | Wake → spoken answer with local Kokoro voice; no silent turns |
+| M3 | Live voice replies + natural local TTS | **in progress** | Kokoro plugin + bundle registered; live wake→spoken turn still to verify |
 | M4 | Launcher owns the FLA lifecycle | **done** | One Start brings up Dodaios and (optionally) FLA; Stop stops FLA; `--status` reports both |
 | M5 | Web-chat bridge (ChatGPT/Gemini web) | **blocked** | Design only until the compliance decision in §6 is made |
 | M6 | Multi-agent orchestrator with a reviewing lead | **design only** | Design in `docs/plans/agent-orchestrator.md` |
