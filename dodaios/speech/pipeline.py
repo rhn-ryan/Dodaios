@@ -9616,7 +9616,13 @@ class SpeechPipeline:
                 }
             elif not outcome:
                 self._last_realtime_start_error = None
-            return reason
+            if outcome.get("cause") != "timeout":
+                return reason
+            # No browser window took the call in time (or none was open).
+            # Fall through to the classic desktop pipeline instead of ending
+            # the call with an opaque "no reason" failure (issue #828).
+            log.info("Browser did not take the call; falling back to classic pipeline.")
+            self._last_realtime_start_error = None
         allow_classic_fallback = True
         try:
             from dodaios.realtime.desktop import (
