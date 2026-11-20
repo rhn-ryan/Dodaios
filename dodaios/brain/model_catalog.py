@@ -394,6 +394,14 @@ TTS_CATALOG: dict[str, tuple[str, list[ModelInfo]]] = {
             ]
         ),
     ),
+    "kokoro-local": (
+        "voice",
+        _curated(
+            [
+                ("kokoro-en-v0_19", "Kokoro — English, natural"),
+            ]
+        ),
+    ),
     # ElevenLabs picks a VOICE ID (opaque hashes), so the curated list carries
     # human names as labels while the value stays the id. The picker's
     # "use custom" row lets a user paste their OWN voice id (e.g. a cloned

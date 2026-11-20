@@ -856,6 +856,22 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "the more natural-sounding option."
         ),
     ),
+    ProviderSpec(
+        id="kokoro-local",
+        label="Kokoro (on this machine, natural)",
+        tier="tts",
+        auth_mode="none",
+        secret_keys=(),
+        dashboard_url=None,
+        signup_url=None,
+        credential_help=(
+            "Speaks on this machine — no API key, no cloud account, nothing "
+            "sent anywhere. Kokoro is a more natural-sounding local voice than "
+            "Piper (82M parameters, multiple English voices) and runs on the "
+            "CPU. The download is about 350 MB. English only; German and other "
+            "languages fall back to an English accent or to Piper."
+        ),
+    ),
     # ── STT ───────────────────────────────────────────────────────────────
     ProviderSpec(
         id="openai-api",
