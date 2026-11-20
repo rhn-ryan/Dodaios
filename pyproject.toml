@@ -639,6 +639,10 @@ deepseek = "dodaios.plugins.brain.deepseek:DeepSeekBrain"
 # serve, llama.cpp llama-server, vLLM, and LM Studio with one adapter.
 ollama = "dodaios.plugins.brain.ollama:OllamaBrain"
 local-openai = "dodaios.plugins.brain.local_openai:LocalOpenAIBrain"
+# FreeLLMApi: the person's own unified LLM router (OpenAI-compatible) on this
+# machine or the LAN. Same adapter as local-openai, with its own default
+# address and required unified key so it is a distinct, selectable provider.
+freellmapi = "dodaios.plugins.brain.freellmapi:FreeLLMAPIBrain"
 
 [project.entry-points."jarvis.harness"]
 python-script = "dodaios.plugins.harness.python_script:PythonScriptHarness"

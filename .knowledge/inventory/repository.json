@@ -1,0 +1,70 @@
+{
+  "repository": {
+    "path": "/mnt/6C7CE26A7CE22E90/Dodaios-dev",
+    "branch": "feature/instance-management",
+    "commit": "6e16a87",
+    "remotes": {
+      "origin": "https://github.com/rhn-ryan/Dodaios.git",
+      "upstream": "https://github.com/Dodaios/Dodaios.git"
+    },
+    "working_tree_status": "modified",
+    "modified_files": [
+      "dodaios/ui/web/dictation_routes.py",
+      "dodaios/ui/web/server.py"
+    ],
+    "untracked_files": [
+      "dodaios/ui/web/headless_dictation.py",
+      "tools/dodaios_launcher.py"
+    ]
+  },
+  "project": {
+    "name": "dodaios",
+    "version": "5.6.0",
+    "description": "All your coding agents in one chat. Open source, installed on your own machine.",
+    "license": "Apache-2.0",
+    "python_version": ">=3.11,<3.15",
+    "entry_points": {
+      "dodaios": "dodaios.__main__:main",
+      "jarvis": "dodaios.__main__:main",
+      "personal-jarvis": "dodaios.__main__:main",
+      "dodaiosctl": "dodaios.cli_ctl.__main__:main",
+      "jarvisctl": "dodaios.cli_ctl.__main__:main",
+      "jctl": "dodaios.cli_ctl.__main__:main"
+    }
+  },
+  "languages": {
+    "python": 5440,
+    "typescript": 12902,
+    "markdown": 85,
+    "yaml": 15,
+    "toml": 8,
+    "json": 45,
+    "sql": 9
+  },
+  "major_directories": {
+    "dodaios": "Main application package",
+    "conductor": "Job scheduling and orchestration service",
+    "board-backend": "Board backend service",
+    "ui": "UI components (orb, web)",
+    "scripts": "Utility scripts",
+    "tests": "Test suite",
+    "tools": "Development tools",
+    "docs": "Documentation",
+    "install": "Installation scripts",
+    "packaging": "Packaging configuration",
+    "data": "Runtime data",
+    "assets": "Static assets",
+    "wiki": "Wiki content"
+  },
+  "excluded_paths": [
+    "node_modules",
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    "dist",
+    ".venv",
+    ".freebuff",
+    ".knowledge"
+  ],
+  "analysis_timestamp": "2026-11-20T22:30:00Z"
+}

@@ -504,6 +504,7 @@ TIER_DEFAULTS_BY_PROVIDER: dict[str, dict[str, str]] = {
         # empty means "the plugin discovers the first installed model".
         "ollama": "",
         "local-openai": "",
+        "freellmapi": "",
     },
     "deep": {
         # Frontier 2026-Q2 — deep brain (user mandate 2026-04-29:
@@ -530,6 +531,7 @@ TIER_DEFAULTS_BY_PROVIDER: dict[str, dict[str, str]] = {
         # Local providers: empty = plugin-side discovery (see router tier).
         "ollama": "",
         "local-openai": "",
+        "freellmapi": "",
     },
 }
 

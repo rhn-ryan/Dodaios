@@ -1861,6 +1861,15 @@ async def wake_word_self_test(request: Request) -> dict[str, object]:
     elif not mic_ok:
         message, hint = "Mic signal is very quiet.", "Speak louder or raise input gain."
         message_code, hint_code = "mic_quiet", "speak_louder"
+    elif plan.message_code == "vosk_out_of_vocabulary":
+        # The grammar model cannot spell this phrase, so resolution moved the
+        # wake to the open-vocabulary transcript match. Ready — and honest
+        # about which engine will hear it instead of a dead-end vocabulary
+        # error for a phrase the app can in fact listen for.
+        message = plan.message
+        hint = "Say it to wake — the transcript match accepts any phrase."
+        message_code, hint_code = "vosk_out_of_vocabulary", "say_the_phrase"
+        message_params = {**message_params, **dict(plan.message_params)}
     else:
         message = (
             f"Ready: '{phrase}' on engine '{plan.engine}' "

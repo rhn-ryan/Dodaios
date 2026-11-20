@@ -52,6 +52,7 @@ the event loop a live voice WebSocket shares. Two shapes, no third:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 from typing import Any
@@ -70,6 +71,10 @@ router = APIRouter(prefix="/api/dictation", tags=["dictation"])
 #: shape had the event loop serializing them for free. Same pattern, and the
 #: same reason, as ``dictionary_routes._LOCK``.
 _LOCK = threading.Lock()
+
+#: One headless stand-in per (provider, model). Building an STT client reads
+#: the config and may touch credentials, so it must not happen per request.
+_HEADLESS_CACHE: dict[tuple[str, str], Any] = {}
 
 #: What a Restore says when there is simply no provider to ask. Not an error:
 #: the entry still comes back, it just comes back without its words. Phrased as
@@ -91,43 +96,98 @@ def _config(request: Request) -> Any:
 
 
 def _pipeline(request: Any = None) -> Any:
-    """The live SpeechPipeline, or a HeadlessDictationPipeline if STT is configured.
+    """The running pipeline — native ``SpeechPipeline`` or a headless stand-in.
 
-    Falls back to a headless pipeline when no native SpeechPipeline is available
-    but STT keys are configured — this enables dictation on headless servers.
+    A headless server has no native pipeline, but it can still capture the
+    microphone and transcribe with the configured provider. That stand-in is
+    only offered when ``[stt]`` names a provider, so a host with no
+    speech-to-text answers the status probe honestly instead of pretending.
     """
     try:
         from dodaios.core.runtime_refs import get_speech_pipeline
 
-        pipeline = get_speech_pipeline()
-        if pipeline is not None:
-            return pipeline
-    except Exception:  # noqa: BLE001 — a missing runtime ref is "no pipeline"
+        live = get_speech_pipeline()
+        if live is not None:
+            return live
+    except Exception:  # noqa: BLE001 — a missing runtime ref means "no pipeline"
         pass
 
-    # No native pipeline; try headless if STT is configured
+    stt_cfg = _stt_config(request)
+    if stt_cfg is None:
+        return None
+    return _headless_pipeline(stt_cfg)
+
+
+def _stt_config(request: Any) -> Any:
+    """``[stt]`` from ``request.app.state.config`` (the real FastAPI shape).
+
+    Tests and CLI callers have historically passed bare config objects, so a
+    dict with an ``stt`` key and an object carrying ``.stt`` are accepted too.
+    """
+    if request is None:
+        return None
+    app = getattr(request, "app", request)
+    if isinstance(app, dict):
+        cfg = app
+    elif hasattr(app, "stt"):
+        cfg = app
+    else:
+        cfg = getattr(getattr(app, "state", None), "config", None)
+    if cfg is None:
+        return None
+    if isinstance(cfg, dict):
+        return cfg.get("stt")
+    return getattr(cfg, "stt", None)
+
+
+def _headless_pipeline(stt_cfg: Any) -> Any:
+    """Build (once per provider) the headless pipeline for this configuration."""
+    if isinstance(stt_cfg, dict):
+        key = (str(stt_cfg.get("provider", "")), str(stt_cfg.get("model", "")))
+        provider = stt_cfg.get("provider", "")
+    else:
+        key = (
+            str(getattr(stt_cfg, "provider", "")),
+            str(getattr(stt_cfg, "model", "")),
+        )
+        provider = getattr(stt_cfg, "provider", "")
+    if not str(provider).strip():
+        return None
+    cached = _HEADLESS_CACHE.get(key)
+    if cached is not None:
+        return cached if _flag(cached, "dictation_available") else None
     try:
-        from dodaios.ui.web.headless_dictation import get_headless_pipeline
+        from dodaios.plugins.stt import build_stt_from_config
 
-        # Only attempt headless dictation if STT is configured in the app config
-        if request is not None:
-            try:
-                # Check the app config for STT provider
-                app_cfg = getattr(request.app.state, "config", None)
-                if app_cfg is not None:
-                    stt_provider = getattr(app_cfg, "stt", None)
-                    if stt_provider is not None and str(getattr(stt_provider, "provider", "")).strip():
-                        # Has real STT config, try headless pipeline
-                        hp = get_headless_pipeline()
-                        if hp is not None and hp.dictation_available():
-                            return hp
-            except Exception:
-                pass
-        # No headless pipeline available for this request
-    except Exception:  # noqa: BLE001 — headless init failure is graceful
-        pass
+        from dodaios.ui.web.headless_dictation import HeadlessDictationPipeline
 
-    return None
+        pipeline = HeadlessDictationPipeline(stt=build_stt_from_config(stt_cfg))
+    except Exception as exc:  # noqa: BLE001 — headless init failure is graceful
+        log.info("Headless dictation unavailable: %s", exc)
+        return None
+    _HEADLESS_CACHE[key] = pipeline
+    return pipeline if _flag(pipeline, "dictation_available") else None
+
+
+def _flag(pipeline: Any, name: str) -> bool:
+    """Read a pipeline capability that is a METHOD natively but was a property
+    on the old headless stand-in. Calling a property is what produced the
+    bogus "Dictation status could not be read." — accept both shapes."""
+    value = getattr(pipeline, name, None)
+    return bool(value() if callable(value) else value)
+
+
+async def _call_dictation(pipeline: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call a dictation control that may be sync (native) or async (old stand-in).
+
+    ``SpeechPipeline.start_dictation`` is synchronous, so awaiting its result
+    raised ``TypeError: object bool can't be used in 'await' expression`` and
+    the route answered 500 for a dictation that had actually started.
+    """
+    result = getattr(pipeline, name)(*args, **kwargs)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
 
 def _dictation_cfg(request: Request) -> Any:
@@ -276,7 +336,7 @@ async def _format_restored_text(
         # handed back the original language while the live path translates would
         # be a quiet lie about what the button does.
         translate_to = resolve_translate_target(cfg)
-        pipeline = _pipeline()
+        pipeline = _pipeline(request)
         terms = ()
         getter = getattr(pipeline, "_dictation_protected_terms", None)
         if callable(getter):
@@ -349,7 +409,7 @@ async def _retranscribe_from_audio(
     """
     from dodaios.dictation.audio import load_dictation_audio
 
-    stt = _restore_stt(_pipeline())
+    stt = _restore_stt(_pipeline(request))
     if stt is None:
         return "", "", "", _NO_STT_DETAIL
 
@@ -653,8 +713,8 @@ async def get_status(request: Request) -> dict[str, Any]:
         reason = "No speech pipeline is running (headless, or voice is disabled)."
     else:
         try:
-            available = bool(pipeline.dictation_available())
-            active = bool(pipeline.dictation_active())
+            available = _flag(pipeline, "dictation_available")
+            active = _flag(pipeline, "dictation_active")
             if not available:
                 reason = "No microphone or no speech-to-text provider is configured."
         except Exception as exc:  # noqa: BLE001 — never 500 a status probe
@@ -737,7 +797,11 @@ async def start(body: StartBody, request: Request) -> dict[str, Any]:
         getattr(_dictation_cfg(request), "target", "auto") or "auto"
     )
     try:
-        started = bool(await pipeline.start_dictation(target=target, source="rest"))
+        started = bool(
+            await _call_dictation(
+                pipeline, "start_dictation", target=target, source="rest"
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("dictation start failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Dictation could not start.") from exc
@@ -763,7 +827,7 @@ async def stop(request: Request) -> dict[str, Any]:
     if pipeline is None:
         return {"ok": True, "stopped": False, "active": False}
     try:
-        stopped = bool(pipeline.stop_dictation())
+        stopped = bool(await _call_dictation(pipeline, "stop_dictation"))
     except Exception as exc:  # noqa: BLE001
         log.warning("dictation stop failed: %s", exc, exc_info=True)
         stopped = False
@@ -1457,7 +1521,7 @@ async def test_polish(request: Request) -> dict[str, Any]:
         sample = "Bitte sende den Bericht morgen um 10 Uhr an das Team."  # i18n-allow
         sample_language = "de"
 
-    pipeline = _pipeline()
+    pipeline = _pipeline(request)
     terms: tuple[str, ...] = ()
     getter = getattr(pipeline, "_dictation_protected_terms", None)
     if callable(getter):

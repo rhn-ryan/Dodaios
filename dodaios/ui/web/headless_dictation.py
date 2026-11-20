@@ -1,100 +1,157 @@
 """Headless dictation service for when no native SpeechPipeline is available.
 
-Provides a minimal SpeechPipeline-compatible interface that uses
-sounddevice for microphone capture and the configured STT provider
-(e.g. Groq Whisper API) for transcription.
+The desktop app runs a full ``SpeechPipeline`` that owns the microphone,
+dictation hotkeys, history and insertion. A headless server has no such
+pipeline (``JARVIS_VOICE=0``), yet the web UI still offers the dictation tab
+and its microphone button. This module is the minimal stand-in: it captures
+the microphone and transcribes with the configured STT provider.
 
-This enables dictation to work on headless servers where a full
-SpeechPipeline cannot run (e.g. no pywebview, no GPU, etc.).
+It deliberately mirrors the *interface* of ``SpeechPipeline`` — methods, not
+properties, for ``dictation_active()`` / ``dictation_engine_status()`` — so
+the REST routes and the WebSocket handler cannot tell the two apart.
+
+One rule shapes the implementation: capture NEVER runs on the asyncio event
+loop. A previous version called ``sounddevice.rec()`` for ``max_seconds``
+(1800 s) and then ``sounddevice.wait()`` inside an ``async`` task, which
+blocked the server's only event loop for up to half an hour and made the whole
+UI freeze. A short ``InputStream.read()`` loop in a daemon thread keeps the
+loop responsive and lets ``stop_dictation()`` end a recording immediately.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
-import sounddevice as sd
+from loguru import logger as log
 
 from dodaios.core.config import load_config
-from dodaios.plugins.stt import build_stt_from_config
-from dodaios.core.events import DictationTranscript, DictationCompleted
+from dodaios.core.events import DictationCompleted, DictationTranscript
 from dodaios.core.paths import user_data_dir
+from dodaios.plugins.stt import build_stt_from_config
 
-log = logging.getLogger(__name__)
-
-# Format constants - same as dictation/audio.py
+# Format constants — same as dictation/audio.py
 SAMPLE_RATE: int = 16_000
 CHANNELS: int = 1
 SAMPLE_WIDTH: int = 2  # bytes per sample (signed 16-bit)
 
+#: Frames read per blocking call. 1024 @ 16 kHz ≈ 64 ms, small enough that
+#: ``stop_dictation()`` is felt immediately and large enough not to spin.
+_BLOCK_FRAMES = 1024
+
+
 
 class HeadlessDictationPipeline:
-    """A SpeechPipeline-compatible interface for headless dictation.
+    """A ``SpeechPipeline``-compatible dictation surface for headless hosts.
 
-    Captures audio via sounddevice and transcribes using the
-    configured STT provider. Emits the same events as the real
-    pipeline (DictationTranscript, DictationCompleted).
+    Only the pieces the browser UI uses are implemented: availability, a
+    recording start/stop, transcription with the configured provider, and the
+    same bus events a native dictation publishes. Insertion and hotkeys are
+    intrinsically absent on a host with no desktop session.
     """
 
     def __init__(self, stt: Any | None = None, input_device: str | None = None) -> None:
-        """Initialize the headless dictation pipeline.
-
-        Args:
-            stt: An STT provider instance. If None, one will be built
-                 from the current config.
-            input_device: Name or index of the audio input device.
-                          If None, the default input device is used.
-        """
-        self._input_device = input_device or "auto-headset"
         self._stt = stt or self._build_stt()
         self._utterance_stt = self._stt
+        self._input_device = input_device or self._configured_input_device()
+        self._device_index = self._resolve_input_device(self._input_device)
         self._is_recording = False
-        self._record_task: asyncio.Task[None] | None = None
-        self._transcript: str = ""
-        self._language: str = "en"
-        self._output_dir: Path | None = None
+        self._stop_event = threading.Event()
+        self._record_thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._started_at = 0.0
+        self._error: str = ""
 
-        # Set up output directory for failed audio sidecars
-        udd = user_data_dir()
-        self._output_dir = Path(udd) / "data" / "dictation_audio"
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+        # Failed-audio sidecars live beside the real dictation ones.
+        try:
+            udd = user_data_dir()
+            self._output_dir: Path | None = Path(udd) / "data" / "dictation_audio"
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001 — a missing data dir must not break boot
+            self._output_dir = None
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
 
     def _build_stt(self) -> Any:
-        """Build an STT provider from the current configuration."""
-        cfg = load_config().stt
+        """Build the STT provider from ``[stt]``, or ``None`` when unusable."""
         try:
+            cfg = load_config().stt
             stt = build_stt_from_config(cfg)
-            log.info("Built STT provider: %s (%s)", type(stt).__module__, type(stt).__name__)
+            log.info(
+                "Headless dictation STT: {} ({})",
+                type(stt).__module__,
+                type(stt).__name__,
+            )
             return stt
-        except Exception as exc:
-            log.warning("Failed to build STT from config: %s", exc)
-            return None  # type: ignore[return-value]
+        except Exception as exc:  # noqa: BLE001 — no provider is a clean no-op
+            log.warning("Headless dictation: no STT provider ({})", exc)
+            return None
 
-    @property
-    def dictation_active(self) -> bool:
-        """Is the dictation lane engaged right now?"""
-        return False
+    def _configured_input_device(self) -> str:
+        try:
+            return str(load_config().audio.input_device or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def _resolve_input_device(name: str) -> int | None:
+        """Turn ``[audio].input_device`` into a real PortAudio input index.
+
+        Accepts the configured name (``pulse``, ``pipewire``, part of a device
+        name), ``auto``/``default``/empty for the system default, and finally
+        falls back to the first device that has input channels. Returns
+        ``None`` when the host has no capture device at all — the honest
+        answer for ``dictation_available``.
+        """
+        try:
+            import sounddevice as sd
+
+            devices = sd.query_devices()
+            target = (name or "").strip().lower()
+            if target and target not in ("auto", "default", "auto-headset"):
+                for index, device in enumerate(devices):
+                    if device.get("max_input_channels", 0) > 0 and target in str(
+                        device.get("name", "")
+                    ).lower():
+                        return index
+            try:
+                default_index = sd.default.device[0]
+            except Exception:  # noqa: BLE001
+                default_index = None
+            if (
+                isinstance(default_index, int)
+                and 0 <= default_index < len(devices)
+                and devices[default_index].get("max_input_channels", 0) > 0
+            ):
+                return default_index
+            for index, device in enumerate(devices):
+                if device.get("max_input_channels", 0) > 0:
+                    return index
+        except Exception as exc:  # noqa: BLE001 — no PortAudio is "no microphone"
+            log.info("Headless dictation: no audio input available ({})", exc)
+        return None
+
+    # ------------------------------------------------------------------
+    # SpeechPipeline-compatible status surface
+    # ------------------------------------------------------------------
 
     def dictation_available(self) -> bool:
-        """True if the server can run mic-dictation (a mic + an STT exist)."""
-        return self._utterance_stt is not None and self._input_device != "none"
+        """True when a microphone AND an STT provider exist on this host."""
+        return self._utterance_stt is not None and self._device_index is not None
 
-    @property
+    def dictation_active(self) -> bool:
+        """Is a dictation recording right now? (Method, like SpeechPipeline.)"""
+        return self._is_recording
+
     def dictation_engine_status(self) -> dict[str, Any]:
         """Which recognizer reads the next dictation, for the UI."""
-        try:
-            # Return a sensible default when STT is available
-            return {
-                "local": self._utterance_stt is not None,
-                "provider": getattr(self._utterance_stt, "name", ""),
-                "model": getattr(self._utterance_stt, "model", ""),
-                "fallback": "",
-                "detail": "",
-            }
-        except Exception as exc:
-            log.debug("dictation engine status unavailable (%s)", exc)
+        stt = self._utterance_stt
+        if stt is None:
             return {
                 "local": False,
                 "provider": "",
@@ -102,262 +159,339 @@ class HeadlessDictationPipeline:
                 "fallback": "",
                 "detail": "",
             }
+        local = bool(getattr(stt, "is_local", False)) or "local" in type(stt).__name__.lower()
+        return {
+            "local": local,
+            "provider": str(
+                getattr(stt, "name", "")
+                or getattr(stt, "provider", "")
+                or type(stt).__name__
+            ),
+            "model": str(getattr(stt, "model", "") or ""),
+            "fallback": "",
+            "detail": "",
+        }
 
-    async def start_dictation(self, *, target: str = "chat", source: str = "ws") -> bool:
-        """Begin a transcribe-only dictation session.
+    def _dictation_stt(self) -> Any:
+        """The reader a Restore uses (same recognizer as a live dictation)."""
+        return self._utterance_stt
 
-        Args:
-            target: Where the transcript goes. "chat" = composer input,
-                    "insert" = paste into focused field.
-            source: Where the request came from (for logging).
+    # ------------------------------------------------------------------
+    # Control
+    # ------------------------------------------------------------------
 
-        Returns:
-            True if dictation started successfully, False otherwise.
+    def start_dictation(self, *, target: str = "chat", source: str = "api") -> bool:
+        """Begin a dictation. Returns False when it cannot start.
+
+        Synchronous on purpose, exactly like ``SpeechPipeline.start_dictation``:
+        the REST routes used to ``await`` this call and broke on the native
+        pipeline. It only flips flags and starts a daemon thread, so it is safe
+        to call from the event loop.
         """
         if self._is_recording:
-            log.warning("Dictation already running, refusing to start")
+            log.info("Headless dictation already running — start refused.")
+            return False
+        if not self.dictation_available():
+            log.info(
+                "Headless dictation unavailable (stt={}, device={}).",
+                self._utterance_stt is not None,
+                self._device_index,
+            )
             return False
 
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:  # called from a plain thread (CLI/threadpool)
+            self._loop = None
+
+        # "auto" has no foreground window to paste into on a headless host;
+        # deliver the text to the chat composer instead.
+        self._target = "chat" if target in ("", "auto", "chat") else target
         self._is_recording = True
-        self._transcript = ""
-        self._language = "auto"
-        self._record_task = asyncio.create_task(self._record_and_transcribe(target, source))
-        log.info("Headless dictation started (target=%s, source=%s)", target, source)
+        self._error = ""
+        self._started_at = time.monotonic()
+        self._stop_event.clear()
+        self._record_thread = threading.Thread(
+            target=self._capture,
+            name="headless-dictation",
+            daemon=True,
+        )
+        self._record_thread.start()
+        log.info(
+            "Headless dictation started (target={}, source={}, device={}).",
+            self._target,
+            source,
+            self._device_index,
+        )
         return True
 
     def stop_dictation(self) -> bool:
-        """Finish the running dictation session.
-
-        Idempotent: stopping nothing is not an error.
-
-        Returns:
-            True if dictation was stopped (or was already stopped).
-            Returns False if no dictation was running.
-        """
+        """End the running dictation and transcribe what was captured."""
         if not self._is_recording:
             return False
-
-        self._is_recording = False
-        # Cancel the recording task if it exists
-        if self._record_task is not None:
-            self._record_task.cancel()
-            self._record_task = None
-
-        # Emit final transcript/completed event - schedule for later
-        # We cannot await here since this is sync, so use create_task
-        import asyncio
-        asyncio.create_task(self._finish_dictation(outcome="empty" if not self._transcript.strip() else "inserted"))
-        log.info("Headless dictation stopped, transcript: %r", self._transcript)
+        # Never join here: this is called on the event loop, and a wedged
+        # driver must not freeze the server. The capture thread stops within
+        # one 64 ms block and schedules the transcription on this loop.
+        self._stop_event.set()
+        log.info("Headless dictation stopped; transcribing.")
         return True
 
-    async def _record_and_transcribe(self, target: str, source: str) -> None:
-        """Record audio from mic and transcribe it."""
+    # ------------------------------------------------------------------
+    # Capture (worker thread — never the event loop)
+    # ------------------------------------------------------------------
+
+    def _capture(self) -> None:
+        """Read microphone blocks until stopped or the duration cap is hit."""
+        chunks: list[bytes] = []
+        error = ""
+        started = time.monotonic()
+        max_seconds = self._max_seconds()
         try:
-            # Record a single chunk (up to max_seconds from config)
-            max_seconds = 1800.0  # default from DictationConfig
-            num_frames = int(max_seconds * SAMPLE_RATE)
+            import sounddevice as sd
 
-            log.info("Recording dictation audio for up to %.1f seconds...", max_seconds)
-
-            # Record audio
-            recording = sd.rec(
-                num_frames,
+            with sd.InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
-            )
-            sd.wait()  # Wait until recording is finished
+                device=self._device_index,
+                blocksize=_BLOCK_FRAMES,
+            ) as stream:
+                while not self._stop_event.is_set():
+                    if (time.monotonic() - started) >= max_seconds:
+                        log.info(
+                            "Headless dictation reached its {:.0f} s limit.", max_seconds
+                        )
+                        break
+                    data, _overflowed = stream.read(_BLOCK_FRAMES)
+                    if len(data):
+                        chunks.append(bytes(data))
+        except Exception as exc:  # noqa: BLE001 — surfaced in the outcome
+            error = str(exc)
+            log.opt(exception=exc).warning("Headless dictation capture failed: {}", exc)
+        finally:
+            pcm = b"".join(chunks)
+            duration = max(0.0, time.monotonic() - started)
+            self._dispatch_finish(pcm, duration, error)
 
-            log.debug("Recording complete, shape: %s", recording.shape)
+    def _max_seconds(self) -> float:
+        """The configured ceiling, or ``inf`` when the user set ``0``."""
+        try:
+            configured = float(load_config().dictation.max_seconds)
+        except Exception:  # noqa: BLE001
+            return 1800.0
+        return configured if configured > 0 else float("inf")
 
-            # Transcribe using STT
-            if self._utterance_stt is not None:
-                try:
-                    # Use transcribe_pcm if available, otherwise transcribe
-                    transcript = await self._transcribe_pcm(recording.tobytes())
-                    self._transcript = transcript.text
-                    self._language = getattr(transcript, "language", "en") or "en"
-                    log.info("Transcription result: %r (language: %s)", self._transcript, self._language)
-                except Exception as exc:
-                    log.warning("Transcription failed: %s", exc)
-                    self._transcript = ""
-                    self._language = "en"
-            else:
-                log.error("No STT provider available for transcription")
-                self._transcript = ""
+    def _dispatch_finish(self, pcm: bytes, duration: float, error: str) -> None:
+        """Hand the finished audio back to the event loop, safely."""
+        loop = self._loop
+        coro = self._finish(pcm, duration, error)
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(coro, loop)
+                return
+            except Exception as exc:  # noqa: BLE001 — a stopped loop is expected
+                log.debug("Headless dictation could not schedule finish: {}", exc)
+                coro.close()
+        # No loop (CLI start): finish synchronously in this thread.
+        try:
+            asyncio.run(coro)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Headless dictation finish failed: {}", exc)
 
-            # Emit completion event
-            self._finish_dictation(outcome="empty" if not self._transcript.strip() else "inserted")
+    # ------------------------------------------------------------------
+    # Transcription + delivery
+    # ------------------------------------------------------------------
 
-        except asyncio.CancelledError:
-            log.info("Dictation recording cancelled")
-            raise
-        except Exception as exc:
-            log.error("Error during dictation recording: %s", exc, exc_info=True)
-            self._finish_dictation(outcome="failed", detail=str(exc))
+    async def _finish(self, pcm: bytes, duration: float, error: str) -> None:
+        raw = ""
+        language = "unknown"
+        detail = error
+        try:
+            if pcm and self._utterance_stt is not None:
+                transcript = await self._transcribe(pcm)
+                raw = str(
+                    getattr(transcript, "raw_text", "")
+                    or getattr(transcript, "text", "")
+                    or ""
+                ).strip()
+                language = str(getattr(transcript, "language", "") or "unknown")
+                if not raw and not error:
+                    detail = "The microphone captured no speech."
+            elif not error:
+                detail = "The microphone captured no audio."
+        except Exception as exc:  # noqa: BLE001 — never lose the outcome
+            detail = str(exc)
+            log.opt(exception=exc).warning("Headless dictation transcription failed: {}", exc)
         finally:
             self._is_recording = False
-            self._record_task = None
+            self._record_thread = None
 
-    async def _transcribe_pcm(self, pcm_bytes: bytes) -> Any:
-        """Transcribe raw PCM bytes using the STT provider."""
+        text = raw
+        clean_reason = ""
+        if raw:
+            try:
+                from dodaios.dictation.formatting import format_dictation
+
+                cfg = load_config().dictation
+                formatted = format_dictation(
+                    raw,
+                    language=language,
+                    fillers=bool(getattr(cfg, "remove_fillers", True)),
+                    paragraphs=bool(getattr(cfg, "auto_paragraphs", True)),
+                    max_removed_fraction=float(
+                        getattr(cfg, "filler_max_removed_fraction", 0.25)
+                    ),
+                )
+                text = formatted.text
+                clean_reason = getattr(formatted, "filler_reason", "") or ""
+            except Exception:  # noqa: BLE001 — formatting is never allowed to lose text
+                log.debug("Headless dictation formatting unavailable")
+
+        outcome = "chat" if text else ("failed" if detail else "empty")
+        await self._publish(text=text, raw=raw, language=language, outcome=outcome,
+                            detail=detail or "", duration=duration)
+        self._record_history(
+            raw=raw,
+            text=text,
+            language=language,
+            outcome=outcome,
+            detail=detail or "",
+            duration=duration,
+            clean_reason=clean_reason,
+        )
+
+    async def _transcribe(self, pcm: bytes) -> Any:
         stt = self._utterance_stt
-        if stt is None:
-            return type("Transcript", (), {"text": "", "language": "unknown", "confidence": 0.0})()
-
-        # Check if the provider has transcribe_pcm method
-        if hasattr(stt, "transcribe_pcm"):
-            # transcribe_pcm is typically async
+        transcribe = getattr(stt, "transcribe_pcm", None)
+        if callable(transcribe):
             try:
-                result = await stt.transcribe_pcm(pcm_bytes, sample_rate=SAMPLE_RATE, language="auto")
-                return result
+                return await transcribe(pcm, sample_rate=SAMPLE_RATE, language="auto")
             except TypeError:
-                # Fallback: call transcribe_pcm without language
-                result = stt.transcribe_pcm(pcm_bytes, sample_rate=SAMPLE_RATE)
-                return result
-        elif hasattr(stt, "transcribe"):
-            # Async transcribe - collect chunks
-            # For headless, we have raw PCM so we wrap it
-            try:
-                # Try the compat shim first
-                result = await stt.transcribe_pcm(pcm_bytes, sample_rate=SAMPLE_RATE, language="auto")
-                return result
-            except TypeError:
-                pass
+                # Older provider without keyword support.
+                return await transcribe(pcm)
+        # Container-only provider: wrap the PCM and use its file path.
+        post = getattr(stt, "_post_transcription", None)
+        if callable(post):
+            return await post(self._wrap_pcm_as_wav(pcm), language="auto")
+        raise RuntimeError("The configured STT provider cannot read raw microphone audio.")
 
-            # Try _post_transcription path
-            try:
-                wav_bytes = _wrap_pcm_as_wav(pcm_bytes, sample_rate=SAMPLE_RATE, channels=1)
-                # Check for _post_transcription
-                if hasattr(stt, "_post_transcription"):
-                    result = await stt._post_transcription(wav_bytes, language="auto")
-                    return result
-            except Exception:
-                pass
-
-            # Last resort: just return empty
-            return type("Transcript", (), {"text": "", "language": "unknown", "confidence": 0.0})()
-
-        # Default fallback
-        return type("Transcript", (), {"text": "", "language": "unknown", "confidence": 0.0})()
-
-    async def _finish_dictation(
+    async def _publish(
         self,
         *,
-        outcome: str = "inserted",
-        text: str | None = None,
-        raw_text: str | None = None,
-        detail: str = "",
-        method: str = "",
-        language: str | None = None,
-        stt_providers: tuple[str, ...] = (),
-        stt_models: tuple[str, ...] = (),
-        detected_languages: tuple[str, ...] = (),
-        stt_latency_ms: int = 0,
-        polish_status: str = "",
-        polish_provider: str = "",
-        polish_latency_ms: int = 0,
+        text: str,
+        raw: str,
+        language: str,
+        outcome: str,
+        detail: str,
+        duration: float,
     ) -> None:
-        """Publish DictationTranscript and DictationCompleted events."""
         from dodaios.core.runtime_refs import get_default_bus
 
         bus = get_default_bus()
-        text = text or self._transcript
-        raw_text = raw_text or self._transcript
-        language = language or self._language
-
-        # Publish DictationTranscript (live text feed)
+        if bus is None:
+            return
         try:
             await bus.publish(
                 DictationTranscript(
                     source_layer="headless.dictation",
                     text=text,
                     is_final=True,
-                    language=language,
+                    target="chat",
                 )
             )
-            log.debug("Published DictationTranscript: %r", text)
-        except Exception as exc:
-            log.warning("Failed to publish DictationTranscript: %s", exc)
-
-        # Publish DictationCompleted (outcome)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Headless dictation transcript publish failed: {}", exc)
         try:
             await bus.publish(
                 DictationCompleted(
                     source_layer="headless.dictation",
                     outcome=outcome,
-                    text=text or "",
-                    raw_text=raw_text or "",
-                    detail=detail or ("" if outcome == "inserted" else "The dictation ended before it produced text."),
-                    method=method,
+                    text=text,
+                    raw_text=raw,
+                    detail=detail,
+                    method="chat" if text else "",
                     language=language or "en",
-                    duration_s=0.0,
-                    stt_providers=stt_providers,
-                    stt_models=stt_models,
-                    detected_languages=detected_languages,
-                    stt_latency_ms=stt_latency_ms,
-                    polish_status=polish_status,
-                    polish_provider=polish_provider,
-                    polish_latency_ms=polish_latency_ms,
+                    duration_s=duration,
                 )
             )
-            log.debug("Published DictationCompleted: outcome=%s, text=%s", outcome, text)
-        except Exception as exc:
-            log.warning("Failed to publish DictationCompleted: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Headless dictation completed publish failed: {}", exc)
+
+    def _record_history(
+        self,
+        *,
+        raw: str,
+        text: str,
+        language: str,
+        outcome: str,
+        detail: str,
+        duration: float,
+        clean_reason: str,
+    ) -> None:
+        try:
+            from dodaios.dictation.cleanup import count_words
+            from dodaios.dictation.history import DictationHistory
+
+            cfg = load_config().dictation
+            if not bool(getattr(cfg, "history_enabled", True)):
+                return
+            DictationHistory().add(
+                raw_text=raw,
+                text=text,
+                language=language if language != "unknown" else "",
+                duration_s=duration,
+                outcome=outcome,
+                method="chat" if text else "",
+                cleanup_reason=clean_reason,
+                word_count=count_words(text),
+                error=detail or None,
+                max_entries=int(getattr(cfg, "history_max_entries", 200) or 200),
+                retention_days=int(getattr(cfg, "history_retention_days", 30) or 30),
+            )
+        except Exception as exc:  # noqa: BLE001 — history is a record, not the delivery
+            log.debug("Headless dictation history write skipped: {}", exc)
 
     @staticmethod
-    def _wrap_pcm_as_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> bytes:
-        """Wrap raw PCM bytes as a WAV file (minimal header, no extra chunks)."""
+    def _wrap_pcm_as_wav(pcm: bytes, sample_rate: int = SAMPLE_RATE, channels: int = 1) -> bytes:
+        """Wrap raw int16 PCM as a minimal WAV container."""
         import struct
 
-        n_frames = len(pcm_bytes) // (2 * channels)  # 2 bytes per sample
-        if n_frames == 0:
-            return b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x10\x00\x00\x64"
-
-        # RIFF header
-        riff = b"RIFF"
-        file_size = 36 + len(pcm_bytes)  # 8 + 24 + 8 + n_frames*2 - 4
-        riff += struct.pack("<I", file_size)
-        riff += b"WAVE"
-
-        # fmt sub-chunk
-        fmt = b"fmt "
-        fmt += struct.pack("<I", 16)  # sub-chunk size
-        fmt += struct.pack("<H", 1)   # audio format (PCM)
-        fmt += struct.pack("<H", channels)
-        fmt += struct.pack("<I", sample_rate)
-        byte_rate = sample_rate * channels * 2
-        fmt += struct.pack("<I", byte_rate)
-        fmt += struct.pack("<H", channels * 2)  # block align
-        fmt += struct.pack("<H", 16)  # bits per sample
-
-        # data sub-chunk
-        data = b"data"
-        data_size = len(pcm_bytes)
-        data += struct.pack("<I", data_size)
-        data += pcm_bytes
-
-        return riff + fmt + data
+        if not pcm:
+            return b""
+        header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVE"
+        header += b"fmt " + struct.pack("<I", 16)
+        header += struct.pack("<H", 1)  # PCM
+        header += struct.pack("<H", channels)
+        header += struct.pack("<I", sample_rate)
+        header += struct.pack("<I", sample_rate * channels * 2)
+        header += struct.pack("<H", channels * 2)
+        header += struct.pack("<H", 16)
+        header += b"data" + struct.pack("<I", len(pcm))
+        return header + pcm
 
 
 # Singleton instance, initialized on first access
 _headless_pipeline: HeadlessDictationPipeline | None = None
+_headless_lock = threading.Lock()
 
 
 def get_headless_pipeline() -> HeadlessDictationPipeline | None:
     """Get or create the headless dictation pipeline instance."""
     global _headless_pipeline
     if _headless_pipeline is None:
-        try:
-            _headless_pipeline = HeadlessDictationPipeline()
-            log.info("Headless dictation pipeline created")
-        except Exception as exc:
-            log.warning("Failed to create headless dictation pipeline: %s", exc)
-            _headless_pipeline = None
+        with _headless_lock:
+            if _headless_pipeline is None:
+                try:
+                    _headless_pipeline = HeadlessDictationPipeline()
+                    log.info("Headless dictation pipeline created")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Failed to create headless dictation pipeline: {}", exc)
+                    _headless_pipeline = None
     return _headless_pipeline
 
 
 def reset_headless_pipeline() -> None:
     """Reset the headless dictation pipeline (useful for config changes)."""
     global _headless_pipeline
-    _headless_pipeline = None
+    with _headless_lock:
+        _headless_pipeline = None

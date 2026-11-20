@@ -413,6 +413,13 @@ PROVIDER_ROWS: Final[tuple[ProviderRow, ...]] = (
         models_source="live",
         keyless=True,
     ),
+    ProviderRow(
+        id="freellmapi",
+        label="FreeLLMApi",
+        family="local",
+        runner="api",
+        models_source="live",
+    ),
 )
 
 _BY_ID: Final[dict[str, ProviderRow]] = {row.id: row for row in PROVIDER_ROWS}

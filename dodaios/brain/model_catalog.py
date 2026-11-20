@@ -57,6 +57,7 @@ _PROVIDER_TTL_CAP_SECONDS: dict[str, float] = {
     "local-openai": 60,
     # The proxy's model list is whatever its config currently serves.
     "litellm": 60,
+    "freellmapi": 60,
 }
 
 # The brain providers whose catalogs we can enumerate. Codex is excluded
@@ -80,6 +81,9 @@ CATALOG_PROVIDERS: tuple[str, ...] = (
     # local-openai via the standard /v1/models.
     "ollama",
     "local-openai",
+    # The person's own unified router: its /v1/models roster is whatever it is
+    # configured to serve, so it is a live catalog with no curated fallback.
+    "freellmapi",
 )
 
 
@@ -151,6 +155,14 @@ _ENDPOINTS: dict[str, _CatalogEndpoint] = {
         "/v1/models",
         "none",
         secret_slot=("local_openai_api_key", "LOCAL_OPENAI_API_KEY"),
+    ),
+    # FreeLLMApi: same OpenAI roster on the user's own router, at a KNOWN
+    # default address, with a required bearer key (its unified API key).
+    "freellmapi": _CatalogEndpoint(
+        "http://127.0.0.1:3001/v1",
+        "/models",
+        "bearer",
+        secret_slot=("freellmapi_api_key", "FREELLMAPI_API_KEY"),
     ),
 }
 

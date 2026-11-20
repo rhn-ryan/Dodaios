@@ -3451,6 +3451,7 @@
         "custom_onnx_other_phrase": "Custom wake model '{model_file}' belongs to a different phrase; '{phrase}' uses the local-Whisper transcript match.",
         "stt_match_unreliable": "Custom phrase '{phrase}' is on the local-Whisper transcript match — this is UNRELIABLE for a hard name. Download the Vosk model for {language} to make it reliable (Settings -> Wake word -> 'Download wake model').",
         "stt_match_unreliable_any_language": "Custom phrase '{phrase}' is on the local-Whisper transcript match — this is UNRELIABLE for a hard name. Download the Vosk model for the configured language to make it reliable (Settings -> Wake word -> 'Download wake model').",
+        "vosk_out_of_vocabulary": "'{phrase}' is not in the {language} Vosk model's vocabulary, so the local-Whisper transcript match listens for it instead (open vocabulary: any phrase works).",
         "needs_local_model": "Wake word '{phrase}' needs a local model. Install the local speech pack (works for any word) or supply a custom .onnx to enable it. Until then the wake word is off — use the Call shortcut to start a voice turn.",
         "needs_local_model_no_phrase": "Wake word 'your wake word' needs a local model. Install the local speech pack (works for any word) or supply a custom .onnx to enable it. Until then the wake word is off — use the Call shortcut to start a voice turn.",
         "no_phrase": "No wake word set.",

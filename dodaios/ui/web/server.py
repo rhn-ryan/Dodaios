@@ -14,6 +14,7 @@ Explicitly NOT here:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import mimetypes
 import os
@@ -2259,43 +2260,42 @@ class WebServer:
 
         Transcribe-only: the pipeline streams ``DictationTranscript`` events
         (forwarded to the browser by the wildcard subscriber) straight into the
-        chat input — it never reaches the brain. Resolves the pipeline via
-        ``runtime_refs``; if there is none (headless / voice disabled) it emits a
-        recoverable error + a toast instead of crashing (cloud-first no-op).
+        chat input — it never reaches the brain. Resolves the pipeline through
+        the dictation routes' resolver (native pipeline, or the headless stand-in
+        when one is configured); if there is none it emits a recoverable error +
+        a toast instead of crashing (cloud-first no-op).
         """
-        from dodaios.core.runtime_refs import get_speech_pipeline
-        from dodaios.ui.web.headless_dictation import get_headless_pipeline
+        from dodaios.ui.web.dictation_routes import _pipeline as _dictation_pipeline
 
         mode = str(payload.get("mode", "start"))
         # "chat" (default) fills the composer; "insert" is dictation mode —
         # the transcript is pasted into the focused field of whatever app is in
         # front. The chat mic button never sends "insert".
         target = "insert" if str(payload.get("target", "chat")) == "insert" else "chat"
-        pipeline = get_speech_pipeline()
+        pipeline = _dictation_pipeline(self.app)
         if pipeline is None:
-            # No native pipeline; try headless if STT is configured
-            hp = get_headless_pipeline()
-            if hp is not None and hp.dictation_available():
-                pipeline = hp
-            else:
-                # Headless / voice disabled — no server mic. Recoverable, not fatal:
-                # surface it as an ErrorOccurred (the frontend already handles that
-                # event) and return. Cloud-first no-op.
-                await self.bus.publish(
-                    ErrorOccurred(
-                        layer="ui.web.dictation",
-                        error_type="DictationUnavailable",
-                        message="Dictation needs a server microphone (not available in this mode).",
-                        recoverable=True,
-                        source_layer="ui.web.ws",
-                    )
+            # Headless / voice disabled — no server mic. Recoverable, not fatal:
+            # surface it as an ErrorOccurred (the frontend already handles that
+            # event) and return. Cloud-first no-op.
+            await self.bus.publish(
+                ErrorOccurred(
+                    layer="ui.web.dictation",
+                    error_type="DictationUnavailable",
+                    message="Dictation needs a server microphone (not available in this mode).",
+                    recoverable=True,
+                    source_layer="ui.web.ws",
                 )
-                return
+            )
+            return
         try:
             if mode == "stop":
-                pipeline.stop_dictation()
+                result = pipeline.stop_dictation()
+                if inspect.isawaitable(result):
+                    await result
             else:
                 started = pipeline.start_dictation(target=target, source="ws")
+                if inspect.isawaitable(started):
+                    started = await started
                 if not started:
                     await self.bus.publish(
                         ErrorOccurred(

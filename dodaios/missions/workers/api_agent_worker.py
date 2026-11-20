@@ -125,6 +125,8 @@ _BRAIN_BY_PROVIDER: dict[str, tuple[str, str]] = {
     # plugins supply their own dummy SDK key.
     "ollama": ("dodaios.plugins.brain.ollama", "OllamaBrain"),
     "local-openai": ("dodaios.plugins.brain.local_openai", "LocalOpenAIBrain"),
+    # Same in-process tool loop over the person's own FreeLLMApi router.
+    "freellmapi": ("dodaios.plugins.brain.freellmapi", "FreeLLMAPIBrain"),
 }
 
 # A free OpenRouter model id — the LAST-RESORT default for the gateway provider

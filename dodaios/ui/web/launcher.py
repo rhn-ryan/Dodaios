@@ -24,6 +24,7 @@ import signal
 import sys
 import threading
 import time
+from typing import Any
 
 from dodaios.core.branding import PRODUCT_NAME as APP_DISPLAY_NAME
 from dodaios.core.process_utils import (
@@ -96,6 +97,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--headless",
         action="store_true",
         help="FastAPI backend only, no window (for dev/test)",
+    )
+    p.add_argument(
+        "--no-voice",
+        action="store_true",
+        dest="no_voice",
+        help=(
+            "Headless only: do not start the microphone/wake-word pipeline "
+            "(the default is to listen when [trigger].wake_word_enabled is true)."
+        ),
     )
     p.add_argument(
         "--dev",
@@ -387,6 +397,27 @@ def _fast_vite_dev_url(force_dev: bool) -> str | None:
     return vite_url if force_dev or configured_dev else None
 
 
+def _headless_voice_enabled(args: Any, cfg: Any) -> bool:
+    """Should this headless process own the microphone and the wake word?
+
+    A server has no window, but it can still listen. The wake-word setting is
+    the user's own opt-in; ``--no-voice`` and ``JARVIS_VOICE=0`` are the
+    explicit opt-outs. The background agent service deliberately stays
+    voice-free so it can coexist with the desktop app on one machine.
+    """
+    if getattr(args, "no_voice", False):
+        return False
+    env = os.environ.get("JARVIS_VOICE", "").strip().lower()
+    if env in ("0", "off", "false"):
+        return False
+    if env in ("1", "on", "true", "yes"):
+        return True
+    if getattr(args, "background_service", False):
+        return False
+    trigger = getattr(cfg, "trigger", None)
+    return bool(getattr(trigger, "wake_word_enabled", False))
+
+
 async def _run_headless(args) -> int:
     """Headless **fast boot** (the "serve first, init behind" contract).
 
@@ -398,9 +429,10 @@ async def _run_headless(args) -> int:
     the heavy ``import fastapi`` (~450 ms) + load_config + the _init chain OFF the
     time-to-serving path.
     """
-    # This launcher never constructs a native SpeechPipeline. Browser audio
-    # loads its own engines on demand; do not wait for a native warm-up event.
-    os.environ["JARVIS_VOICE"] = "0"
+    # Whether this process builds a native SpeechPipeline is decided once the
+    # config is loaded (see ``_headless_voice_enabled``): a server that owns a
+    # microphone should honor the user's wake word, while browser-only hosts
+    # stay on the old ``JARVIS_VOICE=0`` path.
     _bp = os.environ.get("JARVIS_BOOT_PROFILE") == "1"
     _bp_last = time.perf_counter()
 
@@ -575,6 +607,9 @@ async def _run_headless(args) -> int:
     ensure_project_root_cwd()
     refresh_persisted_env_from_user_registry()
     cfg = load_config()
+    # Seed the process-wide voice switch before WebServer reads it, so its
+    # VoiceBootStatus seed matches whether a pipeline will actually run.
+    os.environ["JARVIS_VOICE"] = "1" if _headless_voice_enabled(args, cfg) else "0"
     if args.dev:
         cfg = cfg.model_copy(update={"ui": cfg.ui.model_copy(update={"dev_mode": True})})
     if args.port is not None:
@@ -886,6 +921,38 @@ async def _run_headless(args) -> int:
     # awaits brain_ready (anti-gaming: a cleanly-deferred subsystem makes the
     # first request WAIT, which the functional smoke proves).
     asyncio.create_task(_build_brain_bg(), name="brain-build")
+
+    # Wake word + dictation on a headless host. Started after the app is
+    # serving, so a missing microphone or a keyless TTS can never delay or
+    # break the HTTP surface; the task contains its own failures.
+    if os.environ.get("JARVIS_VOICE", "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+    ):
+        from dodaios.speech.headless_voice import run_headless_voice
+
+        _voice_task = asyncio.create_task(
+            run_headless_voice(
+                cfg=cfg,
+                bus=server.bus,
+                supervisor=supervisor,
+                brain_getter=lambda: brain_holder["brain"],
+                app=server.app,
+            ),
+            name="headless-voice",
+        )
+
+        def _on_voice_done(task: asyncio.Task[None]) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                from loguru import logger as _voice_logger
+
+                _voice_logger.opt(exception=exc).error("Headless voice task failed")
+
+        _voice_task.add_done_callback(_on_voice_done)
 
     # (BOOT_READY was already emitted the moment the bootstrap server began
     # serving — the full app built above warms up behind it.)
