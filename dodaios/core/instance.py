@@ -75,7 +75,7 @@ DEV_ICON_FILE_NAME = "dodaios-dev.ico"
 #: Short label appended to the product name ("Dodaios Dev").
 DEV_LABEL = "Dev"
 
-KNOWN_INSTANCE_NAMES = (DEFAULT_INSTANCE_NAME, DEV_INSTANCE_NAME)
+KNOWN_INSTANCE_NAMES = (DEFAULT_INSTANCE_NAME, DEV_INSTANCE_NAME, "original", "fresh")
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 
