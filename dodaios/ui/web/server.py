@@ -2275,7 +2275,7 @@ class WebServer:
         if pipeline is None:
             # No native pipeline; try headless if STT is configured
             hp = get_headless_pipeline()
-            if hp is not None and hp.dictation_available:
+            if hp is not None and hp.dictation_available():
                 pipeline = hp
             else:
                 # Headless / voice disabled — no server mic. Recoverable, not fatal:

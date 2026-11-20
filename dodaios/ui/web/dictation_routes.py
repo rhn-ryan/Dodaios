@@ -119,7 +119,7 @@ def _pipeline(request: Any = None) -> Any:
                     if stt_provider is not None and str(getattr(stt_provider, "provider", "")).strip():
                         # Has real STT config, try headless pipeline
                         hp = get_headless_pipeline()
-                        if hp is not None and hp.dictation_available:
+                        if hp is not None and hp.dictation_available():
                             return hp
             except Exception:
                 pass
@@ -722,7 +722,7 @@ async def start(body: StartBody, request: Request) -> dict[str, Any]:
     creates the session task on it, so from a threadpool worker it would
     return a false "could not start" on a host that dictates fine.
     """
-    pipeline = _pipeline()
+    pipeline = _pipeline(request)
     if pipeline is None:
         raise HTTPException(
             status_code=503,
@@ -753,13 +753,13 @@ async def start(body: StartBody, request: Request) -> dict[str, Any]:
 
 
 @router.post("/stop")
-async def stop() -> dict[str, Any]:
+async def stop(request: Request) -> dict[str, Any]:
     """Finish the running dictation. Idempotent: stopping nothing is not an error.
 
     ``async`` for the same reason as ``start``: the stop signal is an
     ``asyncio.Event``, which belongs to the pipeline's loop thread.
     """
-    pipeline = _pipeline()
+    pipeline = _pipeline(request)
     if pipeline is None:
         return {"ok": True, "stopped": False, "active": False}
     try:
