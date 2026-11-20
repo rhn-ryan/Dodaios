@@ -419,6 +419,10 @@ PROVIDER_ROWS: Final[tuple[ProviderRow, ...]] = (
         family="local",
         runner="api",
         models_source="live",
+        # The router lists its upstream catalog in alias-heavy order; start the
+        # picker on the model verified against the live router instead of
+        # whatever alias happens to sort first. The person can still pick any.
+        default_model="claude-haiku-4-5",
     ),
 )
 

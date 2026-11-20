@@ -144,8 +144,9 @@ _DEFAULT_MODEL: dict[str, str] = {
     "grok": "grok-4.3",
     "claude-api": "claude-opus-4-8",
     "gemini": "gemini-3.1-pro-preview",
-    # NVIDIA's own reasoning flagship for heavy subagent work.
-    "nvidia": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    # NVIDIA's own current reasoning flagship for heavy subagent work. The
+    # previous Ultra 253B id is retired (410), so this tracks the live catalog.
+    "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
 }
 # Vertex serves the same Gemini catalogue on Google Cloud, so its worker default
 # is the Gemini one rather than a second literal that would drift from it.

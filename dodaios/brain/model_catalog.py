@@ -322,15 +322,18 @@ CURATED_MODELS: dict[str, list[ModelInfo]] = {
     ],
     "nvidia": _curated(
         [
-            ("nvidia/llama-3.1-nemotron-ultra-253b-v1", "Nemotron Ultra 253B"),
-            ("nvidia/llama-3.3-nemotron-super-49b-v1.5", "Nemotron Super 49B v1.5"),
-            ("deepseek-ai/deepseek-v4-pro", "DeepSeek V4 Pro"),
-            ("deepseek-ai/deepseek-v4-flash", "DeepSeek V4 Flash"),
-            ("moonshotai/kimi-k2.6", "Kimi K2.6"),
-            ("z-ai/glm-5.2", "GLM-5.2"),
-            ("qwen/qwen3.5-397b-a17b", "Qwen3.5 397B A17B"),
-            ("meta/llama-4-maverick-17b-128e-instruct", "Llama 4 Maverick"),
-            ("mistralai/mistral-large-3-675b-instruct-2512", "Mistral Large 3"),
+            # Verified against the live /v1/models list on 2026-11-21. The ids
+            # this replaced had been retired by NVIDIA (HTTP 410), so the
+            # offline fallback was offering models no call could reach.
+            ("nvidia/nemotron-3-ultra-550b-a55b", "Nemotron 3 Ultra 550B"),
+            ("nvidia/nemotron-3.5-super-vl-120b-a12b", "Nemotron 3.5 Super VL 120B"),
+            ("nvidia/nemotron-3.5-lightning-30b-a3b", "Nemotron 3.5 Lightning 30B"),
+            ("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "Nemotron 3 Nano Omni"),
+            ("moonshotai/kimi-k3.1-pro", "Kimi K3.1 Pro"),
+            ("mistralai/mistral-large-4-1t-a52b", "Mistral Large 4"),
+            ("z-ai/glm-5.3-flash", "GLM-5.3 Flash"),
+            ("google/gemma-4-31b-it", "Gemma 4 31B"),
+            ("stepfun-ai/step-5-preview", "Step 5 (preview)"),
         ]
     ),
 }
